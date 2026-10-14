@@ -278,6 +278,13 @@ function fade_audio(step)
     mp.set_property("volume", new_volume)
 end
 
+-- Russian names for the OSD messages
+local category_ru = {
+    sponsor = "реклама", intro = "заставка", outro = "концовка", interaction = "просьба подписаться",
+    selfpromo = "самореклама", filler = "отступление", music_offtopic = "не музыка", preview = "превью",
+}
+local function cat_name(category) return category_ru[category] or category end
+
 function skip_ads(name, pos)
     if pos == nil then return end
     local sponsor_ahead = false
@@ -285,10 +292,10 @@ function skip_ads(name, pos)
         if (options.fast_forward == uuid or not options.skip_once or not t.skipped) and t.start_time <= pos and t.end_time > pos then
             if options.fast_forward == uuid then return end
             if options.fast_forward == false then
-                mp.osd_message("[sponsorblock] " .. t.category .. " skipped")
+                mp.osd_message("[SponsorBlock] пропущено: " .. cat_name(t.category))
                 mp.set_property("time-pos", t.end_time)
             else
-                mp.osd_message("[sponsorblock] skipping " .. t.category)
+                mp.osd_message("[SponsorBlock] пропускаю: " .. cat_name(t.category))
             end
             t.skipped = true
             last_skip = {uuid = uuid, dir = nil}
@@ -345,9 +352,9 @@ function skip_ads(name, pos)
 end
 
 function vote(dir)
-    if last_skip.uuid == "" then return mp.osd_message("[sponsorblock] no sponsors skipped, can't submit vote") end
+    if last_skip.uuid == "" then return mp.osd_message("[SponsorBlock] ничего не пропущено — голосовать не за что") end
     local updown = dir == "1" and "up" or "down"
-    if last_skip.dir == dir then return mp.osd_message("[sponsorblock] " .. updown .. "vote already submitted") end
+    if last_skip.dir == dir then return mp.osd_message("[SponsorBlock] голос уже отправлен") end
     last_skip.dir = dir
     local args = {
         options.python_path,
@@ -367,7 +374,7 @@ function vote(dir)
     else
         utils.subprocess({args = args})
     end
-    mp.osd_message("[sponsorblock] " .. updown .. "vote submitted")
+    mp.osd_message("[SponsorBlock] голос отправлен")
 end
 
 function update()
