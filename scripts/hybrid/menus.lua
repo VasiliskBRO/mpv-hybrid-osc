@@ -40,6 +40,25 @@ local T = {
     forced = "принудит.",
     default = "по умолчанию",
     track = "Дорожка",
+    history = "Недавние",
+    sub_bigger = "Субтитры крупнее",
+    sub_smaller = "Субтитры мельче",
+    sub_earlier = "Субтитры раньше на 0.1 с",
+    sub_later = "Субтитры позже на 0.1 с",
+    sub_reset = "Сбросить размер и сдвиг",
+    secondary = "Вторые субтитры",
+    ab_set_a = "Повтор отрезка: отметить начало (A)",
+    ab_set_b = "Повтор отрезка: отметить конец (B)",
+    ab_clear = "Выключить повтор отрезка",
+    ab_a_set = "Начало отрезка: %s. Выбери пункт ещё раз в конце отрезка",
+    ab_on = "Повтор отрезка %s – %s",
+    ab_off = "Повтор отрезка выключен",
+    history_empty = "История пуста",
+    history_clear = "Очистить историю",
+    history_cleared = "История очищена",
+    missing = "файл не найден",
+    today = "сегодня",
+    yesterday = "вчера",
 }
 
 local LANGS = {
@@ -152,9 +171,24 @@ local function track_label(track)
     return title, table.concat(hint, ", ")
 end
 
+-- watch history written by mpv itself (save-watch-history=yes), one JSON object per line
+local function history_path()
+    return mp.command_native({"expand-path", mp.get_property("watch-history-path") or "~~state/watch_history.jsonl"})
+end
+
+local function format_date(stamp)
+    if not stamp then return nil end
+    local day = os.date("%Y-%m-%d", stamp)
+    local clock = os.date("%H:%M", stamp)
+    if day == os.date("%Y-%m-%d") then return T.today .. " " .. clock end
+    if day == os.date("%Y-%m-%d", os.time() - 86400) then return T.yesterday .. " " .. clock end
+    return os.date("%d.%m.%Y", stamp)
+end
+
 -- builders ---------------------------------------------------------------------------------
 
 local browser
+local secondary_subs
 
 local function tracks(kind, title, property)
     return function ()
@@ -184,9 +218,44 @@ local function tracks(kind, title, property)
         if kind == "sub" then
             items[#items].separator = true
             items[#items + 1] = {title = T.load_subs, icon = "file_open", submenu = browser(start_dir(), "sub")}
+            local secondary = "—"
+            for _, track in ipairs(list) do
+                if track.id == prop("secondary-sid", false) then secondary = (track_label(track)) end
+            end
+            items[#items + 1] = {title = T.secondary, icon = "closed_caption", hint = secondary,
+                submenu = secondary_subs, separator = true}
+            local scale = prop("sub-scale", 1)
+            local delay = prop("sub-delay", 0)
+            local function keep(command) return function () mp.command(command) return "keep" end end
+            items[#items + 1] = {title = T.sub_bigger, icon = "text_increase",
+                hint = string.format("%d%%", math.floor(scale * 100 + 0.5)), action = keep("no-osd add sub-scale 0.1")}
+            items[#items + 1] = {title = T.sub_smaller, icon = "text_decrease", action = keep("no-osd add sub-scale -0.1")}
+            items[#items + 1] = {title = T.sub_earlier, icon = "fast_rewind",
+                hint = string.format("%+.1f с", delay), action = keep("no-osd add sub-delay -0.1")}
+            items[#items + 1] = {title = T.sub_later, icon = "fast_forward", action = keep("no-osd add sub-delay 0.1")}
+            items[#items + 1] = {title = T.sub_reset, icon = "restart_alt",
+                action = keep("no-osd set sub-scale 1; no-osd set sub-delay 0")}
         end
         return {title = title, items = items}
     end
+end
+
+-- second subtitle track shown at the same time (on top of the screen)
+secondary_subs = function ()
+    local items = {}
+    local current = prop("secondary-sid", false)
+    items[1] = {title = T.off, icon = "subtitles_off", active = not current,
+        action = function () mp.commandv("set", "secondary-sid", "no") end}
+    for _, track in ipairs(prop("track-list", {})) do
+        if track.type == "sub" then
+            local label, hint = track_label(track)
+            items[#items + 1] = {
+                title = label, hint = hint, active = track.id == current,
+                action = function () mp.commandv("set", "secondary-sid", tostring(track.id)) end,
+            }
+        end
+    end
+    return {title = T.secondary, items = items}
 end
 
 local function playlist()
@@ -208,18 +277,78 @@ local function playlist()
     return {title = T.playlist, items = items}
 end
 
+local function history()
+    local entries = {}
+    local file = io.open(history_path(), "r")
+    if file then
+        for line in file:lines() do
+            local entry = utils.parse_json(line)
+            if type(entry) == "table" and entry.path then entries[#entries + 1] = entry end
+        end
+        file:close()
+    end
+
+    local items, seen = {}, {}
+    for i = #entries, 1, -1 do -- newest first, each file once
+        local entry = entries[i]
+        local key = entry.path:lower()
+        if not seen[key] then
+            seen[key] = true
+            local name = entry.title
+            if not name or name == "" then name = entry.path:match("([^\\/]+)$") or entry.path end
+            local exists = is_url(entry.path) or utils.file_info(entry.path) ~= nil
+            items[#items + 1] = {
+                title = name, hint = exists and format_date(entry.time) or T.missing, muted = not exists,
+                icon = is_url(entry.path) and "public" or "history",
+                action = function () mp.commandv("loadfile", entry.path) end,
+            }
+            if #items >= 100 then break end
+        end
+    end
+
+    if #items == 0 then
+        items[1] = {title = T.history_empty, muted = true}
+    else
+        items[#items].separator = true
+        items[#items + 1] = {title = T.history_clear, icon = "delete_sweep", action = function ()
+            local out = io.open(history_path(), "w")
+            if out then out:close() end
+            mp.osd_message(T.history_cleared)
+        end}
+    end
+    return {title = T.history, items = items}
+end
+
+local function is_sponsor_chapter(title)
+    return title and title:match("^.- segment %a+ %(%w+%)$") ~= nil
+end
+
 local function chapters()
     local items = {}
-    local current = prop("chapter", -1)
-    for i, chapter in ipairs(prop("chapter-list", {})) do
-        local name = chapter.title
-        if not name or name == "" then name = T.chapter .. " " .. i end
-        items[#items + 1] = {
-            title = name, hint = format_time(chapter.time), active = (i - 1) == current,
-            action = function () mp.set_property_native("chapter", i - 1) end,
-        }
+    local position = prop("time-pos", 0)
+    local list = prop("chapter-list", {})
+    local current
+    for i, chapter in ipairs(list) do
+        if not is_sponsor_chapter(chapter.title) then
+            local name = chapter.title
+            if not name or name == "" then name = T.chapter .. " " .. (#items + 1) end
+            items[#items + 1] = {
+                title = name, hint = format_time(chapter.time),
+                action = function () mp.set_property_native("chapter", i - 1) end,
+            }
+            if chapter.time <= position + 0.5 then current = #items end
+        end
     end
+    if current then items[current].active = true end
     return {title = T.chapters, items = items}
+end
+
+local function real_chapter_count()
+    local count = 0
+    for _, chapter in ipairs(prop("chapter-list", {})) do
+        if not is_sponsor_chapter(chapter.title) then count = count + 1 end
+    end
+    return count
 end
 
 local function speeds()
@@ -272,6 +401,30 @@ local function loop_state()
     return "off"
 end
 
+local function ab_loop_item()
+    local a = mp.get_property_number("ab-loop-a")
+    local b = mp.get_property_number("ab-loop-b")
+    if a and b then
+        return {title = T.ab_clear, icon = "flag", hint = format_time(a) .. " – " .. format_time(b), active = true,
+            action = function ()
+                mp.set_property("ab-loop-a", "no"); mp.set_property("ab-loop-b", "no")
+                mp.osd_message(T.ab_off)
+            end}
+    elseif a then
+        return {title = T.ab_set_b, icon = "flag", hint = "A = " .. format_time(a), action = function ()
+            local now = prop("time-pos", 0)
+            if now <= a then return "stay" end
+            mp.set_property_number("ab-loop-b", now)
+            mp.osd_message(string.format(T.ab_on, format_time(a), format_time(now)))
+        end}
+    end
+    return {title = T.ab_set_a, icon = "flag", action = function ()
+        local now = prop("time-pos", 0)
+        mp.set_property_number("ab-loop-a", now)
+        mp.osd_message(string.format(T.ab_a_set, format_time(now)), 4)
+    end}
+end
+
 local function loops()
     local current = loop_state()
     return {title = T.loop, items = {
@@ -283,7 +436,8 @@ local function loops()
         end},
         {title = T.loop_playlist, icon = "repeat_on", active = current == "playlist", action = function ()
             mp.set_property("loop-file", "no"); mp.set_property("loop-playlist", "inf")
-        end},
+        end, separator = true},
+        ab_loop_item(),
     }}
 end
 
@@ -351,10 +505,11 @@ local function main_menu()
         if track.selected then current[track.type] = track_label(track) end
     end
     local pl_count = prop("playlist-count", 0)
-    local ch_count = prop("chapter-list/count", 0)
+    local ch_count = real_chapter_count()
     local path = absolute_path(mp.get_property("path"))
 
     add({title = T.open_file, icon = "folder_open", hint = "Ctrl+O", submenu = browser(start_dir(), "media")})
+    add({title = T.history, icon = "history", hint = "Ctrl+H", submenu = history})
     add({title = T.playlist, icon = "queue_music",
          hint = pl_count > 0 and (prop("playlist-pos-1", 0) .. "/" .. pl_count) or nil, submenu = playlist})
     if ch_count > 0 then
@@ -400,6 +555,7 @@ function M.init(renderer)
     binding("audio", "audio", tracks("audio", T.audio, "aid"))
     binding("video", "video", tracks("video", T.video, "vid"))
     binding("playlist", "playlist", playlist)
+    binding("history", "history", history)
     binding("chapters", "chapters", chapters)
     binding("speed", "speed", speeds)
     binding("audio-device", "audio-device", audio_devices)

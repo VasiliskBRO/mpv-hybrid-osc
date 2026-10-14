@@ -43,6 +43,13 @@ local user_opts = {
     volume_step = 2,                       -- volume change per wheel tick
     volume_flash = true,                   -- briefly show the volume widget when volume changes
     pause_indicator = "flash",             -- uosc-style pause indicator: "flash", "static" or "no"
+    remember_volume = true,                -- restore the last volume on the next start
+    remember_speed = true,                 -- restore the last playback speed on the next start
+    theme = "orange",                      -- accent color theme: orange, blue, purple, green, red, pink or custom
+    click_pause = true,                    -- single click on the video toggles pause (double click stays fullscreen)
+    buffering_indicator = true,            -- spinner in the center while the video is loading
+    resume_toast = true,                   -- "Resumed from 12:34" toast with a "from the start" button
+    sponsorblock_colors = true,            -- color SponsorBlock segments on the seekbar, hide their helper chapters
 
     idlescreen = true,                     -- show mpv logo when idle
     window_top_bar = "auto",               -- show OSC window top bar: "auto", "yes", or "no" (borderless/fullscreen)
@@ -115,7 +122,7 @@ local user_opts = {
     jump_mode = "relative",                -- seek mode for jump buttons: "relative" or "exact"
     jump_softrepeat = true,                -- enable continuous jumping when holding down seek buttons
     chapter_skip_buttons = false,          -- show the chapter skip backward and forward buttons
-    track_nextprev_buttons = false,        -- show next/previous playlist track buttons
+    track_nextprev_buttons = true,         -- show next/previous buttons when the playlist has more than one file
 
     volume_control = false,                -- show ModernZ mute button and horizontal volume slider in the bar
     volume_control_type = "linear",        -- volume scale type: "linear" or "logarithmic"
@@ -240,7 +247,7 @@ local user_opts = {
     -- title mouse actions
     title_mbtn_left_command = "script-binding stats/display-page-5",
     title_mbtn_mid_command = "show-text ${path}",
-    title_mbtn_right_command = "script-binding hybrid/menu",
+    title_mbtn_right_command = "script-binding hybrid/history",
 
     -- chapter title mouse actions
     chapter_title_mbtn_left_command = "script-binding hybrid/chapters",
@@ -459,6 +466,9 @@ local language = {
         pip = "Picture-in-picture",
         pip_exit = "Exit picture-in-picture",
         speed_hint = "Speed (wheel, drag; right click: 1×)",
+        volume_hint = "Volume (wheel, drag; right click: 100)",
+        resumed = "Resumed from",
+        from_start = "From the start",
     },
     ["ru"] = {
         idle = "Перетащите сюда файл или ссылку",
@@ -499,6 +509,9 @@ local language = {
         pip = "Картинка в картинке",
         pip_exit = "Выйти из «картинки в картинке»",
         speed_hint = "Скорость (колесо, перетаскивание; ПКМ — 1×)",
+        volume_hint = "Громкость (колесо, перетаскивание; ПКМ — 100)",
+        resumed = "Продолжено с",
+        from_start = "С начала",
     },
 }
 
@@ -1517,6 +1530,29 @@ local function draw_seekbar_ranges(element, elem_ass, xp, rh, override_alpha, in
     end
 end
 
+-- SponsorBlock segment colors (the extension's standard palette)
+local SPONSOR_COLORS = {
+    sponsor = "#00D400", selfpromo = "#FFFF00", interaction = "#CC00FF", intro = "#00FFFF",
+    outro = "#0202ED", preview = "#008FD6", filler = "#7300FF", music_offtopic = "#FF9900",
+    poi_highlight = "#FF1684", hook = "#395699",
+}
+
+local function draw_sponsor_segments(element, elem_ass)
+    if element.name ~= "seekbar" or not state.duration or state.duration <= 0 then return end
+    local segments = state.sponsor_segments
+    if not segments or #segments == 0 then return end
+    local slider_lo = element.layout.slider
+    local h = element.layout.geometry.h
+    for _, seg in ipairs(segments) do
+        local x1 = get_slider_ele_pos_for(element, seg.start / state.duration * 100)
+        local x2 = get_slider_ele_pos_for(element, seg.stop / state.duration * 100)
+        if x2 > x1 then
+            begin_draw_layer(element, elem_ass, SPONSOR_COLORS[seg.category] or SPONSOR_COLORS.sponsor)
+            elem_ass:rect_cw(x1, slider_lo.gap, x2, h - slider_lo.gap)
+        end
+    end
+end
+
 -- show visual indicator in seek ranges for ab loop
 local function draw_ab_loop_range(element, elem_ass)
     if element.name ~= "seekbar" then return end
@@ -1772,6 +1808,7 @@ local function render_elements(master_ass)
                 draw_seekbar_progress(element, elem_ass)
                 draw_seekbar_ranges(element, elem_ass, handle_x, handle_radius)
                 draw_ab_loop_range(element, elem_ass)
+                draw_sponsor_segments(element, elem_ass)
                 draw_seekbar_handle(element, elem_ass, handle_x, handle_radius, anim_override, is_active) -- draw handle on top of progress
 
                 elem_ass:draw_stop()
@@ -2309,7 +2346,9 @@ layouts["default"] = function ()
     local subtitle_track = state.sub_track_count > 0
     local playlist_button = user_opts.playlist_button and (not user_opts.hide_empty_playlist_button or state.playlist_count > 1)
     local time_codes_width = get_time_codes_width()
-    local center_half = user_opts.jump_buttons and 75 or 25 -- half width of the center group
+    local playlist_nav = user_opts.track_nextprev_buttons and state.playlist_count > 1
+    local nav_offset = user_opts.jump_buttons and 120 or 60 -- distance of prev/next from the center
+    local center_half = (playlist_nav and nav_offset or (user_opts.jump_buttons and 60 or 0)) + 15
 
     -- left group: decide which buttons fit, then whether the time codes fit next to them
     local left_budget = W / 2 - center_half - 20 - 15
@@ -2462,7 +2501,18 @@ layouts["default"] = function ()
     lo.alpha[3] = 0
     lo.style = osc_styles.time
 
-    -- center buttons: jump back, play/pause, jump forward
+    -- center buttons: [prev] jump back, play/pause, jump forward [next]
+    elements["playlist_prev"].visible = playlist_nav
+    elements["playlist_next"].visible = playlist_nav
+    if playlist_nav then
+        lo = add_layout("playlist_prev")
+        lo.geometry = {x = refX - nav_offset, y = row_y, an = 5, w = 30, h = 24}
+        lo.style = osc_styles.control_2
+        lo = add_layout("playlist_next")
+        lo.geometry = {x = refX + nav_offset, y = row_y, an = 5, w = 30, h = 24}
+        lo.style = osc_styles.control_2
+    end
+
     if user_opts.jump_buttons then
         lo = add_layout("jump_backward")
         lo.geometry = {x = refX - 60, y = row_y, an = 5, w = 30, h = 24}
@@ -3359,6 +3409,15 @@ local function osc_init()
         ass:line_to(center - guide, y2 - 2)
         ass:draw_stop()
 
+        -- hint above the bar (like ModernZ button tooltips)
+        if hovered and not drag and user_opts.tooltip_hints then
+            local seekbar = state.seekbar_element
+            local ty = (seekbar and seekbar.hitbox) and (seekbar.hitbox.y1 - user_opts.tooltip_height_offset) or (y1 - 10)
+            local tw = estimate_text_width(locale.speed_hint, osc_styles.tooltip)
+            local tx = math.min(osc_param.playresx - 10 - tw / 2, center)
+            draw_tooltip(ass, tx, ty, tw, osc_styles.tooltip, locale.speed_hint)
+        end
+
         -- value
         local shown = math.floor(state.speed * 100 + 0.5) / 100
         custom_text(ass, element, anim, center, y1 + 2 + fs / 2, 5, string.format("%g×", shown), fs, "#FFFFFF", "\\b1")
@@ -3445,6 +3504,14 @@ local function osc_init()
             string.format("\\bord0\\clip(%f,%f,%f,%f)", x1, fill_y, x2, y2))
         custom_text(ass, element, anim, x1 + w / 2, ty, 2, text, fs, "#FFFFFF",
             string.format("\\iclip(%f,%f,%f,%f)", x1, fill_y, x2, y2))
+
+        -- hint next to the slider
+        if mouse_hit(element) and not element.state.pressed and user_opts.tooltip_hints then
+            local _, mouse_y = get_virt_mouse_pos()
+            local tw = estimate_text_width(locale.volume_hint, osc_styles.tooltip)
+            local tx = user_opts.volume_widget == "left" and (x2 + 14 + tw / 2) or (x1 - 14 - tw / 2)
+            draw_tooltip(ass, tx, mouse_y + user_opts.tooltip_font_size / 2, tw, osc_styles.tooltip, locale.volume_hint)
+        end
     end
     ne.eventresponder["mbtn_left_down"] = function (element)
         element.state.pressed = true
@@ -4075,9 +4142,48 @@ end)
 mp.observe_property("track-list", "native", update_tracklist)
 observe_cached("playlist-count", request_init)
 observe_cached("playlist-pos-1", request_init)
-observe_cached("chapter-list", function ()
-    state.chapter_list = state.chapter_list or {}
-    table.sort(state.chapter_list, function(a, b) return a.time < b.time end)
+-- SponsorBlock adds its segments as chapter pairs "<Category> segment start (id)" / "... end (id)".
+-- They become colored ranges; state.chapter_list keeps only real chapters and
+-- state.chapter_map translates mpv's chapter index into an index of that list.
+local function sponsor_mark(title)
+    if not title then return nil end
+    local category, kind, id = title:match("^(.-) segment (%a+) %((%w+)%)$")
+    if category and (kind == "start" or kind == "end") then
+        return (category:lower():gsub(" ", "_")), kind, id
+    end
+end
+
+local function set_current_chapter(raw)
+    state.chapter_raw = raw or -1
+    local mapped = state.chapter_map and state.chapter_map[state.chapter_raw]
+    local old = state.chapter or -1
+    state.chapter = mapped or state.chapter_raw
+    if (old >= 0) ~= (state.chapter >= 0) then request_init() else request_tick() end
+end
+
+mp.observe_property("chapter-list", "native", function (_, list)
+    local raw = list or {}
+    table.sort(raw, function(a, b) return a.time < b.time end)
+    local chapters, map, segments, open = {}, {}, {}, {}
+    for i, chapter in ipairs(raw) do
+        local category, kind, id = nil, nil, nil
+        if user_opts.sponsorblock_colors then category, kind, id = sponsor_mark(chapter.title) end
+        if category then
+            if kind == "start" then
+                open[id] = chapter.time
+            elseif open[id] then
+                segments[#segments + 1] = {category = category, start = open[id], stop = chapter.time}
+                open[id] = nil
+            end
+        else
+            chapters[#chapters + 1] = chapter
+        end
+        map[i - 1] = #chapters - 1
+    end
+    state.chapter_list = chapters
+    state.chapter_map = map
+    state.sponsor_segments = segments
+    set_current_chapter(mp.get_property_number("chapter"))
     request_init()
 end)
 observe_cached("duration", function ()
@@ -4133,7 +4239,7 @@ observe_cached("mute", request_tick)
 observe_cached("eof-reached", request_tick)
 observe_cached("ontop", request_init)
 observe_cached("speed", request_tick)
-observe_cached("chapter", request_tick)
+mp.observe_property("chapter", "number", function (_, raw) set_current_chapter(raw) end)
 -- ensure compatibility with auto loop scripts
 mp.observe_property("loop-file", "bool", function(_, val)
     state.file_loop = (val ~= false)
@@ -4530,6 +4636,254 @@ menu.setup({
 menus.init(menu)
 
 --
+-- Hybrid: single click on the video toggles pause.
+-- Acts on release, only if the mouse did not move (window dragging stays free),
+-- and waits for the double-click time: a second click cancels it (double click = fullscreen in input.conf).
+--
+local click = {down_time = nil, x = 0, y = 0, timer = nil}
+
+local function click_release()
+    if not click.down_time then return end
+    local x, y = mp.get_mouse_pos()
+    local moved = math.abs(x - click.x) + math.abs(y - click.y) > 6
+    local long = mp.get_time() - click.down_time > 0.6
+    click.down_time = nil
+    if moved or long or state.menu_open then return end
+    local wait = (mp.get_property_number("input-doubleclick-time") or 300) / 1000
+    click.timer = mp.add_timeout(wait, function ()
+        click.timer = nil
+        if not state.idle_active then mp.commandv("cycle", "pause") end
+    end)
+end
+
+mp.add_key_binding("MBTN_LEFT", "click-pause", function (info)
+    if not user_opts.click_pause then return end
+    if info.event == "down" or info.event == "press" then
+        if click.timer then
+            -- second click of a double click: no pause, fullscreen is handled by MBTN_LEFT_DBL
+            click.timer:kill()
+            click.timer = nil
+            click.down_time = nil
+            return
+        end
+        click.down_time = mp.get_time()
+        click.x, click.y = mp.get_mouse_pos()
+        if info.event == "press" then click_release() end
+    elseif info.event == "up" then
+        click_release()
+    end
+end, {complex = true})
+
+--
+-- Hybrid: buffering indicator (spinner in the center while loading)
+--
+local buffering = {osd = mp.create_osd_overlay("ass-events"), timer = nil, shown = false, delay = nil}
+
+local function buffering_wanted()
+    if not user_opts.buffering_indicator or state.idle_active then return false end
+    if mp.get_property_native("paused-for-cache") then return true end
+    return mp.get_property_native("seeking") == true and not state.pause
+end
+
+local function render_buffering()
+    local w, h = state.osd_dimensions.w, state.osd_dimensions.h
+    if w == 0 or h == 0 then return end
+    local r = math.min(w, h) * 0.035
+    local thickness = r * 0.28
+    local cx, cy = w / 2, h / 2
+    local start = (mp.get_time() * 360) % 360 -- one turn per second
+    local function arc(ass, from, to)
+        local steps = 32
+        local points = {}
+        for i = 0, steps do
+            local a = math.rad(from + (to - from) * i / steps)
+            points[#points + 1] = {cx + math.cos(a) * r, cy + math.sin(a) * r}
+        end
+        for i = steps, 0, -1 do
+            local a = math.rad(from + (to - from) * i / steps)
+            points[#points + 1] = {cx + math.cos(a) * (r - thickness), cy + math.sin(a) * (r - thickness)}
+        end
+        ass:move_to(points[1][1], points[1][2])
+        for i = 2, #points do ass:line_to(points[i][1], points[i][2]) end
+    end
+    local ass = assdraw.ass_new()
+    -- track
+    ass:new_event()
+    ass:append("{\\rDefault\\an7\\pos(0,0)\\bord0\\shad0\\blur0\\1c&H000000&\\1a&H80&}")
+    ass:draw_start()
+    arc(ass, 0, 359.9)
+    ass:draw_stop()
+    -- moving arc
+    ass:new_event()
+    ass:append("{\\rDefault\\an7\\pos(0,0)\\bord0\\shad0\\blur0.6\\1c&H" .. osc_color_convert(user_opts.seekbarfg_color) .. "&}")
+    ass:draw_start()
+    arc(ass, start, start + 270)
+    ass:draw_stop()
+    -- cache fill percentage while waiting for the network
+    local percent = mp.get_property_native("paused-for-cache") and mp.get_property_number("cache-buffering-state")
+    if percent then
+        ass:new_event()
+        ass:append(string.format("{\\rDefault\\an8\\pos(%f,%f)\\fn%s\\fs%d\\bord1\\shad0\\1c&HFFFFFF&\\3c&H000000&}%d%%",
+            cx, cy + r + 8, user_opts.font, math.floor(r * 0.8), percent))
+    end
+    set_osd(buffering.osd, w, h, ass.text, 400)
+end
+
+local function update_buffering()
+    local want = buffering_wanted()
+    if want and not buffering.shown and not buffering.delay then
+        -- short hiccups don't deserve a spinner
+        buffering.delay = mp.add_timeout(0.35, function ()
+            buffering.delay = nil
+            if not buffering_wanted() then return end
+            buffering.shown = true
+            buffering.timer = buffering.timer or mp.add_periodic_timer(1 / 30, render_buffering)
+            buffering.timer:resume()
+            render_buffering()
+        end)
+    elseif not want then
+        if buffering.delay then buffering.delay:kill() buffering.delay = nil end
+        if buffering.shown then
+            buffering.shown = false
+            if buffering.timer then buffering.timer:kill() end
+            render_wipe(buffering.osd)
+        end
+    end
+end
+mp.observe_property("paused-for-cache", "bool", update_buffering)
+mp.observe_property("seeking", "bool", update_buffering)
+mp.observe_property("pause", "bool", update_buffering)
+mp.observe_property("idle-active", "bool", update_buffering)
+
+--
+-- Hybrid: "Resumed from 12:34 [From the start]" toast after a watch-later resume
+--
+local toast = {osd = mp.create_osd_overlay("ass-events"), timer = nil, button = nil, check = false}
+
+local function hide_toast()
+    if toast.timer then toast.timer:kill() toast.timer = nil end
+    toast.button = nil
+    toast.position = nil
+    render_wipe(toast.osd)
+    set_virt_mouse_area(0, 0, 0, 0, "hybrid_toast")
+    mp.disable_key_bindings("hybrid_toast")
+end
+
+local function render_toast(position)
+    local W = osc_param.playresx
+    if W == 0 then return end
+    local fs = 16
+    local text = locale.resumed .. " " .. format_time(position)
+    local button_text = locale.from_start
+    local text_w = estimate_text_width(text, "{\\fn" .. user_opts.font .. "\\fs" .. fs .. "}")
+    local button_w = estimate_text_width(button_text, "{\\fn" .. user_opts.font .. "\\fs" .. fs .. "\\b1}") + 24
+    local pad, h = 14, 36
+    local box_w = pad + text_w + 14 + button_w + 6
+    local x1, y1 = (W - box_w) / 2, 24
+    local bx1 = x1 + pad + text_w + 14
+    local accent = osc_color_convert(user_opts.seekbarfg_color)
+    toast.button = {x1 = bx1, y1 = y1 + 5, x2 = bx1 + button_w, y2 = y1 + h - 5}
+
+    local ass = assdraw.ass_new()
+    ass:new_event()
+    ass:append("{\\rDefault\\an7\\pos(0,0)\\bord1\\shad0\\blur0\\1c&H000000&\\1a&H30&\\3c&H404040&}")
+    ass:draw_start()
+    ass:round_rect_cw(x1, y1, x1 + box_w, y1 + h, h / 2)
+    ass:draw_stop()
+    ass:new_event()
+    ass:append(string.format("{\\rDefault\\an4\\pos(%f,%f)\\fn%s\\fs%d\\bord0\\shad0\\1c&HFFFFFF&}", x1 + pad, y1 + h / 2, user_opts.font, fs))
+    ass:append(text)
+    ass:new_event()
+    ass:append("{\\rDefault\\an7\\pos(0,0)\\bord0\\shad0\\blur0\\1c&H" .. accent .. "&\\1a&HB0&}")
+    ass:draw_start()
+    ass:round_rect_cw(toast.button.x1, toast.button.y1, toast.button.x2, toast.button.y2, (h - 10) / 2)
+    ass:draw_stop()
+    ass:new_event()
+    ass:append(string.format("{\\rDefault\\an5\\pos(%f,%f)\\fn%s\\fs%d\\b1\\bord0\\shad0\\1c&HFFFFFF&}",
+        (toast.button.x1 + toast.button.x2) / 2, y1 + h / 2, user_opts.font, fs))
+    ass:append(button_text)
+    set_osd(toast.osd, osc_param.playresx, osc_param.playresy, ass.text, 1100)
+
+    set_virt_mouse_area(toast.button.x1, toast.button.y1, toast.button.x2, toast.button.y2, "hybrid_toast")
+    mp.enable_key_bindings("hybrid_toast")
+end
+
+mp.set_key_bindings({
+    {"mbtn_left", function ()
+        mp.commandv("seek", 0, "absolute")
+        hide_toast()
+    end},
+    {"mbtn_left_dbl", "ignore"},
+}, "hybrid_toast", "force")
+
+mp.register_event("file-loaded", function ()
+    hide_toast()
+    toast.check = true
+end)
+mp.register_event("playback-restart", function ()
+    if not toast.check or not user_opts.resume_toast then return end
+    toast.check = false
+    local position = mp.get_property_number("time-pos") or 0
+    local duration = mp.get_property_number("duration") or 0
+    -- watch-later resume sets a per-file start (so options/start is not "none" then);
+    -- only a --start given on the command line means "not a resume"
+    local explicit_start = mp.get_property_native("option-info/start/set-from-commandline")
+    if position > 5 and not explicit_start and (duration == 0 or position < duration - 5) then
+        toast.position = position
+        toast.timer = mp.add_timeout(6, hide_toast)
+        -- right after loading the window size may be unknown yet (scale 0 -> broken click area)
+        local function show()
+            if not toast.timer then return end
+            local sx = get_virt_scale_factor()
+            if sx == 0 or osc_param.playresx == 0 then return mp.add_timeout(0.1, show) end
+            render_toast(position)
+        end
+        show()
+    end
+end)
+
+-- keep the button's click area in sync with the window size
+mp.observe_property("osd-dimensions", "native", function ()
+    if toast.button and toast.position then
+        mp.add_timeout(0.1, function ()
+            if toast.button then render_toast(toast.position) end
+        end)
+    end
+end)
+
+--
+-- Hybrid: remember volume and speed between launches (~~state/hybrid-state.json)
+--
+local saved_state_path = mp.command_native({"expand-path", "~~state/hybrid-state.json"})
+
+local function load_saved_state()
+    local file = io.open(saved_state_path, "r")
+    if not file then return end
+    local data = utils.parse_json(file:read("*a") or "")
+    file:close()
+    if type(data) ~= "table" then return end
+    if user_opts.remember_volume and tonumber(data.volume) then
+        mp.set_property_number("volume", tonumber(data.volume))
+    end
+    if user_opts.remember_speed and tonumber(data.speed) then
+        mp.set_property_number("speed", tonumber(data.speed))
+    end
+end
+
+mp.register_event("shutdown", function ()
+    if not (user_opts.remember_volume or user_opts.remember_speed) then return end
+    local data = {
+        volume = mp.get_property_number("volume"),
+        speed = mp.get_property_number("speed"),
+    }
+    local file = io.open(saved_state_path, "w")
+    if file then
+        file:write(utils.format_json(data))
+        file:close()
+    end
+end)
+
+--
 -- Hybrid: briefly show the volume widget when the volume changes (like uosc)
 --
 local function volume_flash()
@@ -4547,7 +4901,28 @@ mp.register_event("playback-restart", function ()
 end)
 
 -- validate string type user options
+-- accent color themes: fill, handle, handle border
+local THEMES = {
+    orange = {"#FF8232", "#C96508", "#FF8232"},
+    blue   = {"#3D8BFF", "#1F5FBF", "#3D8BFF"},
+    purple = {"#A970FF", "#7A45CC", "#A970FF"},
+    green  = {"#3DDC84", "#22A05A", "#3DDC84"},
+    red    = {"#FF4D5E", "#C2303E", "#FF4D5E"},
+    pink   = {"#FF5CA8", "#C23A7D", "#FF5CA8"},
+}
+
+local function apply_theme()
+    local theme = THEMES[user_opts.theme]
+    if not theme then return end -- "custom": colors come from the individual options
+    user_opts.seekbarfg_color = theme[1]
+    user_opts.seek_handle_color = theme[2]
+    user_opts.seek_handle_border_color = theme[3]
+    user_opts.hover_effect_color = theme[1]
+    user_opts.nibble_color = theme[1]
+end
+
 local function validate_user_opts()
+    apply_theme()
     if not language[user_opts.language] then
        msg.warn("language '" .. user_opts.language .. "' not found. Ignoring.")
        user_opts.language = "default"
@@ -4628,6 +5003,7 @@ opt.read_options(user_opts, "hybrid", function(changed)
     if changed.language then load_locale_file() end
     validate_user_opts()
     if changed.language then set_osc_locale() end
+    menu.setup({accent = user_opts.seekbarfg_color, font = user_opts.font})
     set_icon_theme()
     set_osc_styles()
     set_time_styles(changed.timecurrent, changed.timems)
@@ -4643,6 +5019,8 @@ end)
 
 load_locale_file()
 validate_user_opts()
+menu.setup({accent = user_opts.seekbarfg_color, font = user_opts.font})
+load_saved_state()
 set_osc_locale()
 set_icon_theme()
 set_osc_styles()
