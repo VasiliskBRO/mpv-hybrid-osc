@@ -3603,8 +3603,12 @@ local function hide_osc()
         mp.commandv("script-message-to", "thumbfast", "clear")
     end
     -- clear input area immediately so clicks pass through while the bar is
-    -- hidden, rather than waiting for the next render tick to do it
-    set_virt_mouse_area(0, 0, 0, 0, "input")
+    -- hidden, rather than waiting for the next render tick to do it.
+    -- The volume widget shares the "input" section: keep it while the widget is shown
+    -- (autohide calls this on every tick once the bar timed out).
+    if not state.vol_visible then
+        set_virt_mouse_area(0, 0, 0, 0, "input")
+    end
     -- reset margins before hide_bar wipes the overlay
     if not state.enabled then
         reset_margins()

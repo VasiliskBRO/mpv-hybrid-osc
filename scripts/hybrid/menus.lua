@@ -488,10 +488,8 @@ browser = function (dir, mode)
                 if is_current then selected = #items end
             end
         end
-        return {title = dir, items = items, selected = selected or (#items > 1 and 2 or 1), on_back = function ()
-            menu.replace(browser(parent, mode))
-            return true
-        end}
+        -- "back" returns to the menu the browser was opened from; the ".." item goes to the parent folder
+        return {title = dir, items = items, selected = selected or (#items > 1 and 2 or 1)}
     end
 end
 
