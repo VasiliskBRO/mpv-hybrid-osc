@@ -5260,6 +5260,7 @@ local THEMES = {
     green  = {"#3DDC84", "#22A05A", "#3DDC84"},
     red    = {"#FF4D5E", "#C2303E", "#FF4D5E"},
     pink   = {"#FF5CA8", "#C23A7D", "#FF5CA8"},
+    prism  = {"#8C6CFF", "#5A3FD6", "#4FE0FF"}, -- Prism brand: violet fill, cyan handle edge
 }
 
 local function apply_theme()
