@@ -19,6 +19,7 @@ local NAMES = {
     file_loop = "Повтор", playlist = "Плейлист", pip = "Картинка в картинке",
     fullscreen = "Полный экран", info = "Статистика", ontop = "Поверх окон",
     screenshot = "Скриншот", cache_info = "Кэш", download = "Скачать",
+    close = "Закрыть окно", maximize = "Развернуть окно", minimize = "Свернуть окно",
 }
 M.NAMES = NAMES
 
@@ -76,6 +77,7 @@ local BUILTIN = {
     "chapter_prev", "chapter_next", "menu", "sub_track", "audio_track", "time_codes",
     "title", "chapter_title", "seekbar", "speed_ruler", "speed", "shuffle", "file_loop",
     "playlist", "pip", "fullscreen", "info", "ontop", "screenshot", "cache_info",
+    "minimize", "maximize", "close",
 }
 
 local function item_name(item)
@@ -176,6 +178,11 @@ function M.with_zones(skin)
         end
         for _, item in ipairs(api.default_zone_items(skin)) do skin.items[#skin.items + 1] = item end
         skin.zones_edited = true
+    end
+    -- the window buttons too, when the top bar has them
+    if not skin.wc_edited and api.window_controls() then
+        for _, item in ipairs(api.default_wc_items()) do skin.items[#skin.items + 1] = item end
+        skin.wc_edited = true
     end
     return skin
 end
@@ -980,12 +987,14 @@ create_menu = function (at)
             for _, item in ipairs(ed.skin.items) do present[item.id] = true end
             local defaults = {}
             for _, item in ipairs(api.default_skin().items) do defaults[item.id] = item end
+            for _, item in ipairs(api.default_wc_items()) do defaults[item.id] = item end
             local list = {}
             for _, id in ipairs(BUILTIN) do
-                if not present[id] and api.element_type(id) then
+                if not present[id] and api.element_type(id)
+                   and (api.window_controls() or not (id == "close" or id == "maximize" or id == "minimize")) then
                     list[#list + 1] = {title = NAMES[id] or id, action = function ()
                         local default = defaults[id]
-                        if default and default.anchor == "stretch" then
+                        if default and (default.anchor == "stretch" or default.show_in == "top") then
                             add_item(api.copy(default), at) -- spans the window at its standard height
                         else
                             local w = default and default.w or (id == "speed" and 42 or (id == "cache_info" and 70 or 24))

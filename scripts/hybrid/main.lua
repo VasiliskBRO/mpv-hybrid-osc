@@ -2250,8 +2250,11 @@ local function window_controls()
 
     local lo
     local ontop_active = user_opts.ontop_button and window_controls_enabled() and user_opts.ontop_in_topbar and state.ontop
-    local controlbox_w = (user_opts.window_controls and window_control_box_width or 0)
-    local controlbox_left = wc_geo.w - controlbox_w
+    -- a skin with wc_edited lays out close / maximize / minimize itself (osc_param.skin_wc, set by
+    -- layouts["skin"]): no buttons and no click box here, the title ends where its buttons start
+    local skin_wc = osc_param.skin_wc
+    local controlbox_w = (user_opts.window_controls and not skin_wc and window_control_box_width or 0)
+    local controlbox_left = skin_wc and skin_wc.left or (wc_geo.w - controlbox_w)
     local titlebox_left = ontop_active and 50 or wc_geo.x
     local button_y = wc_geo.y - (wc_geo.h / 2)
     local first_geo  = {x = controlbox_left + 25,  y = button_y, an = 5, w = 50, h = wc_geo.h}
@@ -2259,7 +2262,7 @@ local function window_controls()
     local third_geo  = {x = controlbox_left + 125, y = button_y, an = 5, w = 50, h = wc_geo.h}
 
     -- Window controls
-    if user_opts.window_controls then
+    if user_opts.window_controls and not skin_wc then
         local size_hover = hover_effects.size and
             string.format("\\fscx%s\\fscy%s", user_opts.button_hover_size, user_opts.button_hover_size) or ""
         local function wc_hoverstyle(color)
@@ -2655,6 +2658,7 @@ local SKIN_STYLES = {
     playlist_prev = "control_2", playlist_next = "control_2",
     chapter_prev = "control_2", chapter_next = "control_2",
     speed = "speed",
+    close = "window_control", maximize = "window_control", minimize = "window_control",
 }
 
 -- elements that only make sense in some situations
@@ -2665,6 +2669,9 @@ local function skin_item_allowed(id)
     if id == "playlist_prev" or id == "playlist_next" then return state.playlist_count > 1 end
     if id == "chapter_prev" or id == "chapter_next" then return #state.chapter_list > 0 end
     if id == "audio_track" then return state.audio_track_count > 0 end
+    if id == "close" or id == "maximize" or id == "minimize" then
+        return window_controls_enabled() and user_opts.window_controls
+    end
     return true
 end
 
@@ -3007,6 +3014,13 @@ layouts["skin"] = function ()
         return lo
     end
 
+    -- window controls as skin items (skin.wc_edited): hover colors as in window_controls()
+    local wc_hover = {close = user_opts.windowcontrols_close_hover, maximize = user_opts.windowcontrols_max_hover,
+                      minimize = user_opts.windowcontrols_min_hover}
+    local wc_size = hover_effects.size and
+        string.format("\\fscx%s\\fscy%s", user_opts.button_hover_size, user_opts.button_hover_size) or ""
+    local wc_left = W -- the window title is clipped before the leftmost of them in the top bar
+
     for _, e in ipairs(list) do
         local id = e.item.id
         if e.is_zone then
@@ -3061,6 +3075,10 @@ layouts["skin"] = function ()
                 lo.style = osc_styles[SKIN_STYLES[id] or "control_3"]
             end
             apply_skin_item(id, lo, e.item)
+            if wc_hover[id] then
+                lo.button.hoverstyle = "{\\c&H" .. osc_color_convert(wc_hover[id]) .. "&" .. wc_size .. "}"
+                if e.y1 < 50 then wc_left = math.min(wc_left, e.x1) end
+            end
             if e.group ~= "bottom" then lo.group = e.group end
             if e.item.bg then add_skin_shape(id, e) end
             if id == "seekbar" and skin.glow then add_seekbar_glow(e) end
@@ -3068,6 +3086,8 @@ layouts["skin"] = function ()
             elements[id].visible = false
         end
     end
+
+    if skin.wc_edited then osc_param.skin_wc = {left = wc_left} end
 
     if user_opts.persistent_progress or state.persistent_progress_toggle then
         local lo = add_layout("persistent_seekbar")
@@ -4063,6 +4083,7 @@ local function osc_init()
 
     -- load layout
     osc_param.skin_zones, osc_param.skin_zone_override, osc_param.areas_strict = nil, nil, nil
+    osc_param.skin_wc = nil
     if state.is_image then
         layouts["modern-image"]()
     elseif layouts[user_opts.layout] then
@@ -5397,6 +5418,16 @@ editor.init({
             end
         end
         return items
+    end,
+    -- the window buttons as skin items at their usual places (top right of the top bar)
+    window_controls = function () return window_controls_enabled() and user_opts.window_controls end,
+    default_wc_items = function ()
+        local H = osc_param.playresy
+        return {
+            {id = "minimize", anchor = "right", x = -150, w = 50, bottom = H - 50, h = 50, show_in = "top"},
+            {id = "maximize", anchor = "right", x = -100, w = 50, bottom = H - 50, h = 50, show_in = "top"},
+            {id = "close", anchor = "right", x = -50, w = 50, bottom = H - 50, h = 50, show_in = "top"},
+        }
     end,
     relayout = request_init_resize,
     dims = function () return osc_param.playresx, osc_param.playresy end,

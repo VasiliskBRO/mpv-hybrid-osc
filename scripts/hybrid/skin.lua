@@ -15,6 +15,8 @@
 --   zones_edited - true: the hover zones are items of the skin (kind "zone"), the standard ones
 --              included (zone_bottom, zone_top, zone_volume; a deleted one does not work);
 --              otherwise the standard zones are computed and there are no own zones
+--   wc_edited - true: the window buttons (close, maximize, minimize) are items of the skin
+--              (a deleted one is gone); otherwise the top bar draws them at their usual place
 -- Item fields:
 --   id        element name (see ELEMENTS in main.lua) or "custom_*" for user-made objects
 --   anchor    "left" | "center" | "right" - x is counted from that point of the window
@@ -148,6 +150,7 @@ local function normalize(skin)
     skin.height = math.max(0, tonumber(skin.height) or M.DEFAULT.height)
     skin.name = type(skin.name) == "string" and skin.name or nil
     skin.zones_edited = skin.zones_edited == true or nil
+    skin.wc_edited = skin.wc_edited == true or nil
     skin.theme = type(skin.theme) == "string" and skin.theme or nil
     skin.seekbar_height = ({small = 1, medium = 1, large = 1, xlarge = 1})[skin.seekbar_height] and skin.seekbar_height or nil
     skin.background = ({gradient = 1, capsule = 1, none = 1})[skin.background] and skin.background or nil
@@ -234,6 +237,7 @@ function M.encode(skin)
         if skin[key] ~= nil then lines[#lines + 1] = string.format('  %q: %s,', key, json_value(skin[key])) end
     end
     if skin.zones_edited then lines[#lines + 1] = '  "zones_edited": true,' end
+    if skin.wc_edited then lines[#lines + 1] = '  "wc_edited": true,' end
     lines[#lines + 1] = '  "items": ['
     for i, item in ipairs(skin.items) do
         lines[#lines + 1] = "    " .. json_object(item, KEY_ORDER) .. (i < #skin.items and "," or "")
