@@ -92,6 +92,7 @@ local T = {
     save = "Сохранить", undo = "Шаг назад", create = "Создать объект", reset = "Как по умолчанию", exit = "Выйти",
     hint = "Тащи мышкой, за уголок — размер · правый клик — свойства · стрелки — точно · Delete — убрать",
     height = "высота фона",
+    zone_bar = "зона показа панели (мышь здесь — панель появляется)",
     saved = "Скин сохранён",
     save_failed = "Не удалось сохранить: %s",
     unsaved = "Есть несохранённые изменения: «Сохранить» или ещё раз «Выйти» — выйти без сохранения",
@@ -203,6 +204,16 @@ function M.render()
     fill(ass, 0, bar_y - 0.5, W, bar_y + 0.5, "#FFFFFF", 0x90)
     fill(ass, hx1, hy1, hx2, hy2, ed.hover == "height" and accent or "#202020", 0x30)
     text(ass, (hx1 + hx2) / 2, (hy1 + hy2) / 2, 5, "↕ " .. T.height, 12)
+
+    -- hover zones: where the mouse shows the bar (bottom zone, own zones of items above the bar)
+    local zones = api.zones(ed.skin)
+    fill(ass, zones.bar.x1, zones.bar.y1, zones.bar.x2, zones.bar.y2, accent, 0xEE)
+    fill(ass, zones.bar.x1, zones.bar.y1 - 0.5, zones.bar.x2, zones.bar.y1 + 0.5, accent, 0x40)
+    text(ass, 10, zones.bar.y1 + 4, 7, T.zone_bar, 12, "#DDDDDD")
+    for _, z in ipairs(zones.floating) do
+        fill(ass, z.x1, z.y1, z.x2, z.y2, accent, 0xB8)
+        frame(ass, z.x1, z.y1, z.x2, z.y2, accent, 0x30, 1)
+    end
 
     -- item frames (only the selected one while its property menu is open)
     for i, e in ipairs(list) do
@@ -457,6 +468,9 @@ local COLORS = {
 local ALPHAS = {{"Непрозрачный", nil}, {"Чуть прозрачный (25%)", 64}, {"Полупрозрачный (50%)", 128},
                 {"Почти невидимый (75%)", 192}}
 
+local ZONES = {{"Как обычно (20 px)", nil}, {"Без запаса — только сам элемент", 0}, {"Маленькая (8 px)", 8},
+               {"Большая (40 px)", 40}, {"Очень большая (80 px)", 80}}
+
 local PRIORITIES = {
     {"Никогда не прятать", nil}, {"Прятать последним", 9}, {"Прятать позже других", 6},
     {"Прятать раньше других", 3}, {"Прятать первым", 1},
@@ -602,6 +616,12 @@ local function properties(index)
         add({title = "Когда мало места", icon = "unfold_less", hint = find_name(PRIORITIES, item.priority),
              submenu = choice_list("Когда окно узкое", PRIORITIES, function () return ed.skin.items[index].priority end,
                  index, function (it, v) it.priority = v end)})
+        -- only items above the bar background have their own zone
+        if item.bottom >= ed.skin.height then
+            add({title = "Зона наведения", icon = "highlight_alt", hint = find_name(ZONES, item.zone, item.zone and (item.zone .. " px")),
+                 submenu = choice_list("Где мышь показывает панель", ZONES, function () return ed.skin.items[index].zone end,
+                     index, function (it, v) it.zone = v end)})
+        end
         if is_button then
             add({title = "Подсказка при наведении", icon = "chat_bubble_outline",
                  hint = item.tooltip or "как обычно", action = function ()
