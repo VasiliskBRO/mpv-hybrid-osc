@@ -710,6 +710,9 @@ local state = {
     showhide_enabled = false,
     zone_visible = {},                      -- skin hover zones made in the editor: zone id -> shown
     zone_showtime = {},
+    zone_anitype = {},                      -- zone id -> "in" / "out" while it fades
+    zone_anistart = {},
+    zone_animation = {},
     windowcontrols_buttons = false,
     windowcontrols_title = false,
     windowcontrols_ontop = false,
@@ -1721,7 +1724,7 @@ local function group_anim(element)
     local g = element.layout.group
     if g == "top" then return state.wc_animation or 0 end
     if g == "vol" then return state.vol_animation or 0 end
-    if is_zone_group(g) then return 0 end
+    if is_zone_group(g) then return state.zone_animation[g] or 0 end
     return nil
 end
 
@@ -4122,6 +4125,49 @@ local function hide_vol()
     hide_bar("vol", "vol_visible", "vol_anitype", vol_visible)
 end
 
+-- own hover zones of the skin fade like the bars, each on its own
+local zone_fade = {}
+function zone_fade.kill(id)
+    state.zone_anitype[id], state.zone_anistart[id], state.zone_animation[id] = nil, nil, nil
+end
+
+function zone_fade.show(id)
+    if not state.enabled or state.idle_active or state.menu_open then return end
+    state.zone_showtime[id] = mp.get_time()
+    if state.zone_anitype[id] == "out" then
+        -- came back while fading out: show at once
+        zone_fade.kill(id)
+        state.zone_visible[id] = true
+        request_tick()
+    elseif state.zone_visible[id] or state.zone_anitype[id] == "in" then
+        return
+    elseif user_opts.fadeduration > 0 and user_opts.fadein then
+        state.zone_anitype[id], state.zone_anistart[id] = "in", nil
+        request_tick()
+    else
+        state.zone_visible[id] = true
+        request_tick()
+    end
+end
+
+function zone_fade.hide(id)
+    if not state.zone_visible[id] or state.zone_anitype[id] == "out" then return end
+    if user_opts.fadeduration > 0 and state.enabled then
+        state.zone_anitype[id], state.zone_anistart[id] = "out", nil
+    else
+        zone_fade.kill(id)
+        state.zone_visible[id] = false
+    end
+    request_tick()
+end
+
+function zone_fade.hide_all()
+    for id in pairs(state.zone_visible) do zone_fade.hide(id) end
+    for id, a in pairs(state.zone_anitype) do
+        if a == "in" then zone_fade.kill(id) end
+    end
+end
+
 local function vol_dragging()
     local e = state.active_element and elements[state.active_element]
     return e and e.layout and e.layout.group == "vol"
@@ -4167,7 +4213,7 @@ local function mouse_leave()
             if not state.keeponpause_active then hide_osc() end
             hide_wc()
             hide_vol()
-            state.zone_visible = {}
+            zone_fade.hide_all()
             request_tick()
         end
     end
@@ -4368,11 +4414,15 @@ local function process_event(source, what)
         end
 
         -- own hover zones of the skin: their buttons show while the cursor is in the zone
-        -- (or on one of the buttons), they hide by the autohide timeout in render()
+        -- (or on one of the buttons) and hide as soon as it leaves, like the bar
+        -- (with deadzone_hide=timeout - by the autohide timeout in render())
+        local held = state.active_element and elements[state.active_element]
         for _, z in ipairs(osc_param.skin_zones or {}) do
-            if mouse_in_zone(z) and state.enabled then
-                state.zone_visible[z.id] = true
-                state.zone_showtime[z.id] = mp.get_time()
+            if mouse_in_zone(z) then
+                zone_fade.show(z.id)
+            elseif user_opts.visibility ~= "always" and user_opts.deadzone_hide ~= "timeout"
+                and not (held and held.layout and held.layout.group == z.id) then
+                zone_fade.hide(z.id)
             end
         end
 
@@ -4477,6 +4527,22 @@ local function render()
     run_fade("anitype",    "anistart",    "animation",    osc_visible)
     run_fade("wc_anitype", "wc_anistart", "wc_animation", wc_visible)
     run_fade("vol_anitype", "vol_anistart", "vol_animation", vol_visible)
+    for id, anitype in pairs(state.zone_anitype) do
+        state.zone_anistart[id] = state.zone_anistart[id] or now
+        local fadelen = user_opts.fadeduration / 1000
+        local start = state.zone_anistart[id]
+        if now < start + fadelen then
+            if anitype == "in" then
+                state.zone_visible[id] = true
+                state.zone_animation[id] = scale_value(start, start + fadelen, 255, 0, now)
+            else
+                state.zone_animation[id] = scale_value(start, start + fadelen, 0, 255, now)
+            end
+        else
+            state.zone_visible[id] = anitype == "in"
+            zone_fade.kill(id)
+        end
+    end
 
     --mouse show/hide area: mpv keeps one box per section, so it gets the box around all zones;
     -- the mouse_move handler checks the zones themselves
@@ -4598,7 +4664,7 @@ local function render()
                 if hide_timeout >= 0 then
                     local timeout = state.zone_showtime[z.id] + (hide_timeout / 1000) - now
                     if timeout <= 0 then
-                        state.zone_visible[z.id] = false
+                        zone_fade.hide(z.id)
                     else
                         if not state.hide_timer then state.hide_timer = mp.add_timeout(0, tick) end
                         if timeout < state.hide_timer.timeout then
@@ -4713,6 +4779,15 @@ tick = function()
     tick_animation("anitype",    "anistart",    "animation")
     tick_animation("wc_anitype", "wc_anistart", "wc_animation", window_controls_enabled())
     tick_animation("vol_anitype", "vol_anistart", "vol_animation")
+    for id in pairs(state.zone_anitype) do
+        local start = state.zone_anistart[id]
+        if not start or mp.get_time() < 1 + start + user_opts.fadeduration / 1000 then
+            request_tick()
+        else
+            state.zone_visible[id] = state.zone_anitype[id] == "in"
+            zone_fade.kill(id)
+        end
+    end
 end
 
 local function set_tick_delay(_, display_fps)
@@ -5208,6 +5283,7 @@ local function osc_suspend(suspend)
         osc_visible(false)
         wc_visible(false)
         vol_visible(false)
+        state.zone_visible, state.zone_anitype, state.zone_anistart, state.zone_animation = {}, {}, {}, {}
         for _, section in ipairs({"showhide", "showhide_wc", "showhide_vol", "input", "input_wheel", "input_mid",
                                   "window-controls", "window-controls-title", "window-controls-ontop"}) do
             mp.disable_key_bindings(section)
