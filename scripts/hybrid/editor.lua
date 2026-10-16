@@ -3,6 +3,7 @@
 -- Works on the skin table that layout=skin draws, so every change is visible at once.
 
 local M = {}
+local utils = require "mp.utils"
 local api                  -- functions from main.lua, see M.init()
 
 local overlay = mp.create_osd_overlay("ass-events")
@@ -238,6 +239,113 @@ local function handles(e)
     }
 end
 
+-- color picker: a window over the editor (grid of shades, grays, recent colors, own code) ---------
+
+local picker = {}
+
+-- hue 0..360, saturation and lightness 0..1 -> "#RRGGBB"
+local function hsl(h, s, l)
+    local c = (1 - math.abs(2 * l - 1)) * s
+    local x = c * (1 - math.abs((h / 60) % 2 - 1))
+    local m = l - c / 2
+    local r, g, b
+    if h < 60 then r, g, b = c, x, 0 elseif h < 120 then r, g, b = x, c, 0
+    elseif h < 180 then r, g, b = 0, c, x elseif h < 240 then r, g, b = 0, x, c
+    elseif h < 300 then r, g, b = x, 0, c else r, g, b = c, 0, x end
+    return string.format("#%02X%02X%02X", math.floor((r + m) * 255 + 0.5), math.floor((g + m) * 255 + 0.5),
+        math.floor((b + m) * 255 + 0.5))
+end
+
+local PICKER_LIGHT = {0.85, 0.72, 0.6, 0.48, 0.36, 0.24}
+local PICKER_GRID = {}
+for row, l in ipairs(PICKER_LIGHT) do
+    PICKER_GRID[row] = {}
+    for col = 1, 12 do PICKER_GRID[row][col] = hsl((col - 1) * 30, 0.8, l) end
+end
+PICKER_GRID[#PICKER_LIGHT + 1] = {}
+for col = 1, 12 do
+    local v = math.floor(255 * (1 - (col - 1) / 11) + 0.5)
+    PICKER_GRID[#PICKER_LIGHT + 1][col] = string.format("#%02X%02X%02X", v, v, v)
+end
+
+local function is_hex(v) return type(v) == "string" and v:match("^#%x%x%x%x%x%x$") ~= nil end
+
+-- name of a non-color choice ("Как в теме", "Нет"...) by its value
+local function find_extra(extras, value)
+    for _, e in ipairs(extras) do
+        if e[2] == value then return e[1] end
+    end
+    return tostring(value)
+end
+
+picker.recent = {}
+
+function picker.draw(ass, W, H)
+    local p = ed.picker
+    local accent = api.accent()
+    local pw, ph = 540, 340
+    local x0, y0 = math.floor((W - pw) / 2), math.floor((H - ph) / 2)
+    local regions = {}
+    local function region(kind, value, x1, y1, x2, y2)
+        regions[#regions + 1] = {kind = kind, value = value, x1 = x1, y1 = y1, x2 = x2, y2 = y2}
+    end
+    fill(ass, 0, 0, W, H, "#000000", 0xA0)
+    fill(ass, x0, y0, x0 + pw, y0 + ph, "#18181E", 0x08)
+    text(ass, x0 + 16, y0 + 20, 4, p.title, 16)
+
+    -- the grid: 12 hues x 6 shades, then grays; a square of the chosen color gets a white frame
+    local cs, step = 26, 29
+    local gx, gy = x0 + 16, y0 + 40
+    local function square(color, x, y, kind)
+        fill(ass, x, y, x + cs, y + cs, color, 0)
+        if color == p.value then frame(ass, x - 2, y - 2, x + cs + 2, y + cs + 2, "#FFFFFF", 0, 2)
+        elseif p.hover == color then frame(ass, x - 1, y - 1, x + cs + 1, y + cs + 1, "#FFFFFF", 0x40, 1) end
+        region(kind, color, x, y, x + cs, y + cs)
+    end
+    for row, colors in ipairs(PICKER_GRID) do
+        for col, color in ipairs(colors) do
+            square(color, gx + (col - 1) * step, gy + (row - 1) * step + (row == #PICKER_GRID and 6 or 0), "color")
+        end
+    end
+    local ry = gy + #PICKER_GRID * step + 18
+    text(ass, gx, ry, 4, #picker.recent > 0 and "Последние цвета" or "Последние цвета появятся здесь", 13, "#BBBBBB")
+    for i, color in ipairs(picker.recent) do
+        square(color, gx + (i - 1) * step, ry + 12, "color")
+    end
+
+    -- right column: big sample, code, buttons
+    local rx, rw = gx + 12 * step + 14, pw - 12 * step - 46
+    if is_hex(p.value) then
+        fill(ass, rx, gy, rx + rw, gy + 80, p.value, 0)
+    else
+        fill(ass, rx, gy, rx + rw, gy + 80, "#303036", 0)
+    end
+    frame(ass, rx, gy, rx + rw, gy + 80, "#FFFFFF", 0x80, 1)
+    local name = is_hex(p.value) and p.value or find_extra(p.extras, p.value)
+    text(ass, rx + rw / 2, gy + 98, 5, name, 14)
+    local buttons = {{"code", "Ввести код…"}}
+    for i, e in ipairs(p.extras) do buttons[#buttons + 1] = {"extra", e[1], i} end
+    buttons[#buttons + 1] = {"done", "Готово"}
+    buttons[#buttons + 1] = {"cancel", "Отмена"}
+    local by = gy + 116
+    for _, b in ipairs(buttons) do
+        local active = b[1] == "extra" and p.extras[b[3]][2] == p.value
+        local hovered = p.hover == b[1] .. (b[3] or "")
+        local color = b[1] == "done" and accent or (active and "#505060" or "#303036")
+        fill(ass, rx, by, rx + rw, by + 28, hovered and "#5A5A66" or color, 0x10)
+        text(ass, rx + rw / 2, by + 14, 5, b[2], 13)
+        region(b[1], b[3], rx, by, rx + rw, by + 28)
+        by = by + 34
+    end
+    p.regions = regions
+end
+
+function picker.hit(x, y)
+    for _, r in ipairs(ed.picker.regions or {}) do
+        if inside(x, y, r.x1, r.y1, r.x2, r.y2) then return r end
+    end
+end
+
 local function height_handle(W, H)
     local y = H - ed.skin.height
     return W - 140, y - 9, W - 20, y + 9, y
@@ -325,6 +433,8 @@ function M.render()
         end
         text(ass, W / 2, top + 6 + bh + 15, 5, ed.toast or T.hint, 12, ed.toast and accent or "#DDDDDD")
     end
+
+    if ed.picker then picker.draw(ass, W, H) end
 
     overlay.data = table.concat(ass, "\n")
     overlay:update()
@@ -510,7 +620,7 @@ end
 
 -- properties menu -------------------------------------------------------------------------
 
-local look_menu, skin_choice, create_menu
+local look_menu, skin_choice, look_color, create_menu, open_properties
 
 -- what a button can do; command nil = what the element does by itself
 local ACTIONS = {
@@ -634,30 +744,120 @@ local function parse_color(text)
     return text:match("^#%x%x%x%x%x%x$") and text:upper() or nil
 end
 
--- a choice of colors with "Свой цвет…" at the end (a code like #33FF66)
+-- color picker logic ---------------------------------------------------------------------
+
+local RECENT_PATH = mp.command_native({"expand-path", "~~state/hybrid-colors.json"})
+
+local function load_recent()
+    local file = io.open(RECENT_PATH, "r")
+    if not file then return end
+    local data = utils.parse_json(file:read("*a") or "")
+    file:close()
+    picker.recent = {}
+    for _, c in ipairs(type(data) == "table" and type(data.recent) == "table" and data.recent or {}) do
+        if is_hex(c) and #picker.recent < 12 then picker.recent[#picker.recent + 1] = c end
+    end
+end
+
+local function remember_color(color)
+    if not is_hex(color) then return end
+    local list = {color}
+    for _, c in ipairs(picker.recent) do
+        if c ~= color and #list < 12 then list[#list + 1] = c end
+    end
+    picker.recent = list
+    local file = io.open(RECENT_PATH, "w")
+    if file then
+        file:write(utils.format_json({recent = list}))
+        file:close()
+    end
+end
+
+-- spec: title, value (current), extras = {{name, value}} for choices that are not a color,
+-- apply(value) changes ed.skin (no undo step), back() reopens the menu it came from
+function picker.open(spec)
+    load_recent()
+    spec.dirty_before, spec.confirm_before = ed.dirty, ed.confirm_exit
+    ed.picker = spec
+    M.render()
+end
+
+-- every pick shows at once on the element; the whole picking is one undo step
+function picker.choose(value)
+    local p = ed.picker
+    if not p.pushed then
+        push_undo()
+        p.pushed = true
+    end
+    p.value = value
+    p.apply(value)
+    relayout()
+    M.render()
+end
+
+local function picker_close()
+    local p = ed.picker
+    ed.picker = nil
+    M.render()
+    if p.back then p.back() end
+end
+
+function picker.done()
+    remember_color(ed.picker.value)
+    picker_close()
+end
+
+function picker.cancel()
+    local p = ed.picker
+    if p.pushed then
+        ed.skin = table.remove(ed.undo)
+        ed.dirty, ed.confirm_exit = p.dirty_before, p.confirm_before
+        relayout()
+    end
+    picker_close()
+end
+
+function picker.click(x, y)
+    local r = picker.hit(x, y)
+    if not r then return end
+    if r.kind == "color" then picker.choose(r.value)
+    elseif r.kind == "extra" then picker.choose(ed.picker.extras[r.value][2])
+    elseif r.kind == "done" then picker.done()
+    elseif r.kind == "cancel" then picker.cancel()
+    elseif r.kind == "code" then
+        ask_text("Цвет (код вида #33FF66):", is_hex(ed.picker.value) and ed.picker.value or "#", function (text)
+            if not ed or not ed.picker then return end
+            local color = parse_color(text)
+            if not color then
+                toast("Не понял цвет: нужен код вида #33FF66", 4)
+                M.render()
+                return
+            end
+            picker.choose(color)
+        end)
+    end
+end
+
+-- non-color entries of a choice list ("Как в теме", "Нет", "Круг цвета темы"...)
+local function extras_of(list)
+    local extras = {}
+    for _, entry in ipairs(list) do
+        if not is_hex(entry[2]) then extras[#extras + 1] = entry end
+    end
+    return extras
+end
+
+-- a menu action that opens the color picker for a skin item; back to its properties afterwards
 local function color_list(title, list, current, index, apply)
-    local base = choice_list(title, list, current, index, apply)
     return function ()
-        local menu = base()
-        local value = current()
-        local known = false
-        for _, entry in ipairs(list) do known = known or entry[2] == value end
-        menu.items[#menu.items].separator = true
-        menu.items[#menu.items + 1] = {
-            title = "Свой цвет…", hint = (not known) and value or "код вида #33FF66", active = not known,
-            action = function ()
-                ask_text("Цвет (код вида #33FF66):", (not known) and value or "#", function (text)
-                    local color = parse_color(text)
-                    if not color then
-                        toast("Не понял цвет: нужен код вида #33FF66", 4)
-                        return
-                    end
-                    change(index, function (it) apply(it, color) end)
-                    M.render()
-                end)
+        picker.open({
+            title = title, value = current(), extras = extras_of(list),
+            apply = function (v)
+                local it = ed.skin.items[index]
+                if it then apply(it, v) end
             end,
-        }
-        return menu
+            back = function () open_properties(index) end,
+        })
     end
 end
 
@@ -764,7 +964,7 @@ local function properties(index)
                                 {"Тёмный круг", "#121218"}, {"Чёрный круг", "#000000"}}
                 local function shape_of(it) return it.bg and (it.bg_color or "accent") or "none" end
                 add({title = "Фон кнопки", icon = "circle", hint = find_name(shapes, shape_of(item), shape_of(item)),
-                     submenu = color_list("Фон кнопки", shapes, function () return shape_of(ed.skin.items[index]) end, index,
+                     action = color_list("Фон кнопки", shapes, function () return shape_of(ed.skin.items[index]) end, index,
                          function (it, v)
                              it.bg = v ~= "none" and "circle" or nil
                              it.bg_color = (v ~= "none" and v ~= "accent") and v or nil
@@ -799,14 +999,15 @@ local function properties(index)
                 local colors = {{"Как в теме", nil}}
                 for _, c in ipairs(COLORS) do colors[#colors + 1] = c end
                 add({title = "Цвет", icon = "palette", hint = find_name(colors, item.color, item.color),
-                     submenu = color_list("Цвет", colors, function () return ed.skin.items[index].color end, index,
+                     action = color_list("Цвет", colors, function () return ed.skin.items[index].color end, index,
                          function (it, v) it.color = v end)})
             end
             if item.id == "seekbar" then
                 -- the handle colors belong to the whole skin (same as in "Оформление")
                 local function look_entry(title, icon, key)
                     local hint = ed.skin[key] == "none" and "без обводки" or ed.skin[key] or "как в теме"
-                    add({title = title, icon = icon, hint = hint, submenu = skin_choice(title, key)})
+                    add({title = title, icon = icon, hint = hint,
+                         action = look_color(title, key, function () open_properties(index) end)})
                 end
                 look_entry("Цвет кружка", "radio_button_checked", "handle_color")
                 look_entry("Обводка кружка", "trip_origin", "handle_border_color")
@@ -1071,25 +1272,18 @@ skin_choice = function (title, key)
                 end,
             }
         end
-        if LOOK_COLOR_KEYS[key] then
-            local value = ed.skin[key]
-            local own = value and value:match("^#") and value or nil
-            items[#items].separator = true
-            items[#items + 1] = {title = "Свой цвет…", hint = own or "код вида #33FF66", action = function ()
-                ask_text("Цвет (код вида #33FF66):", own or "#", function (text)
-                    local color = parse_color(text)
-                    if not color then
-                        toast("Не понял цвет: нужен код вида #33FF66", 4)
-                        return
-                    end
-                    push_undo()
-                    ed.skin[key] = color
-                    relayout()
-                    M.render()
-                end)
-            end}
-        end
         return {title = title, items = items}
+    end
+end
+
+-- a menu action that opens the color picker for a color of the whole skin
+look_color = function (title, key, back)
+    return function ()
+        picker.open({
+            title = title, value = ed.skin[key], extras = extras_of(LOOK[key]),
+            apply = function (v) ed.skin[key] = v end,
+            back = back,
+        })
     end
 end
 
@@ -1098,7 +1292,8 @@ look_menu = function ()
         local items = {}
         local function add(title, icon, key)
             items[#items + 1] = {title = title, icon = icon, hint = find_name(LOOK[key], ed.skin[key], tostring(ed.skin[key])),
-                                 submenu = skin_choice(title, key)}
+                                 submenu = not LOOK_COLOR_KEYS[key] and skin_choice(title, key) or nil,
+                                 action = LOOK_COLOR_KEYS[key] and look_color(title, key, M.open_look) or nil}
         end
         add("Цвет (тема)", "palette", "theme")
         add("Подложка", "layers", "background")
@@ -1125,7 +1320,7 @@ local function open_menu(id, builder)
     api.menu.open(id, builder)
 end
 
-local function open_properties(index)
+open_properties = function (index)
     ed.selected = index
     open_menu("skin-properties", properties(index))
 end
@@ -1150,6 +1345,15 @@ end
 
 local function on_mouse_move()
     local x, y = mouse()
+    if ed.picker then
+        local r = picker.hit(x, y)
+        local hover = r and (r.kind == "color" and r.value or r.kind .. (r.value or "")) or nil
+        if hover ~= ed.picker.hover then
+            ed.picker.hover = hover
+            M.render()
+        end
+        return
+    end
     if ed.drag then
         apply_drag(x, y)
         M.render()
@@ -1168,6 +1372,10 @@ end
 
 local function on_left(info)
     local x, y = mouse()
+    if ed.picker then
+        if info.event == "down" then picker.click(x, y) end
+        return
+    end
     if info.event == "down" then
         local kind, value = hit(x, y)
         if kind == "button" then
@@ -1221,6 +1429,7 @@ local bindings
 local MOUSE_SECTION = "hybrid_editor_mouse"
 
 local function on_right()
+    if ed.picker then return end
     local x, y = mouse()
     ed.right_at = {x = x, y = y} -- for "Создать здесь…" in the properties of a zone
     local kind, value = hit(x, y)
@@ -1270,13 +1479,22 @@ bind = function ()
         {"ctrl+я", undo},
         {"ctrl+ы", function () if ed.dirty then save() end end},
         {"esc", function ()
-            if ed.selected then ed.selected = nil M.render() else press_button("exit") end
+            if ed.picker then picker.cancel()
+            elseif ed.selected then ed.selected = nil M.render() else press_button("exit") end
         end},
+        {"enter", function () if ed.picker then picker.done() end end},
+        {"kp_enter", function () if ed.picker then picker.done() end end},
         {"space", function () end}, {"q", function () end}, {"Q", function () end},
     }
     bindings = list
     for i, b in ipairs(list) do
-        mp.add_forced_key_binding(b[1], "hybrid-editor-" .. i, b[2], b[3])
+        -- while the color picker is open only esc / enter work
+        local fn = b[2]
+        local own = b[1] == "esc" or b[1] == "enter" or b[1] == "kp_enter"
+        mp.add_forced_key_binding(b[1], "hybrid-editor-" .. i, own and fn or function (...)
+            if ed and ed.picker then return end
+            return fn(...)
+        end, b[3])
     end
 end
 
