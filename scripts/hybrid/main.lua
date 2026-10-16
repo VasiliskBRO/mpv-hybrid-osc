@@ -1713,7 +1713,7 @@ end
 local function group_visible(element)
     local g = element.layout and element.layout.group
     if g == "top" then return state.wc_visible end
-    if g == "vol" then return state.vol_visible end
+    if g == "vol" then return state.vol_visible or state.skin_editing end
     if is_zone_group(g) then return zone_group_visible(g) end
     return state.osc_visible
 end
@@ -2326,14 +2326,24 @@ local function volume_layout()
     local size = user_opts.volume_size
     local top_y = window_controls_enabled() and 50 or 0
     local bottom_y = H - osc_param.video_margins.b * H
-    local available = bottom_y - top_y
-    local height = math.floor(math.min(size * 8, available * 0.8))
-    if height < size * 3 then return end -- window too small
-
-    local margin = math.floor(size / 2)
-    local x1 = user_opts.volume_widget == "left" and margin or (W - margin - size)
-    local y1 = top_y + math.floor((available - height) / 2)
-    local y2 = y1 + height
+    local side = user_opts.volume_widget
+    local x1, y1, y2
+    local sv = osc_param.skin_volume
+    if sv then
+        -- the skin has the widget as an item ("volume"): its box is the slider plus the mute button
+        size = math.max(12, sv.x2 - sv.x1)
+        x1, y1, y2 = sv.x1, sv.y1, math.max(sv.y2, sv.y1 + size * 2 + 4)
+        side = (sv.x1 + sv.x2) / 2 < W / 2 and "left" or "right"
+    else
+        local available = bottom_y - top_y
+        local height = math.floor(math.min(size * 8, available * 0.8))
+        if height < size * 3 then return end -- window too small
+        local margin = math.floor(size / 2)
+        x1 = side == "left" and margin or (W - margin - size)
+        y1 = top_y + math.floor((available - height) / 2)
+        y2 = y1 + height
+    end
+    osc_param.volume_rect = {x1 = x1, y1 = y1, x2 = x1 + size, y2 = y2}
     local slider_y2 = y2 - size - 4
 
     local lo = add_layout("vol_slider")
@@ -2348,8 +2358,8 @@ local function volume_layout()
     lo.layer = 60
 
     -- the proximity zone must not overlap the bottom/top show zones (separate input sections)
-    local zone_x1 = user_opts.volume_widget == "left" and 0 or (W - size * 3.5)
-    local zone_x2 = user_opts.volume_widget == "left" and size * 3.5 or W
+    local zone_x1 = side == "left" and 0 or math.min(x1, W - size * 3.5)
+    local zone_x2 = side == "left" and math.max(x1 + size, size * 3.5) or W
     local zone_y1 = osc_param.areas["showhide_wc"] and osc_param.areas["showhide_wc"][1].y2 or 0
     local zone_y2 = osc_param.areas["showhide"] and osc_param.areas["showhide"][1].y1 or bottom_y
     add_area("showhide_vol", zone_x1, zone_y1, zone_x2, zone_y2)
@@ -2738,6 +2748,13 @@ local function resolve_skin(skin, W, H, editing)
             -- hover zones are not drawn on the bar, only in the editor
             entry.exists, entry.fits, entry.shown = true, true, true
             entry.visible = editing
+        elseif item.id == "volume" then
+            -- the volume widget: only its box, volume_layout() draws it there
+            entry.is_widget = true
+            entry.exists = elements["vol_slider"] ~= nil and user_opts.volume_widget ~= "no"
+            entry.fits = true
+            entry.shown = entry.exists and state.audio_track_count > 0 and not state.is_image
+            entry.visible = editing and entry.exists or entry.shown
         else
             entry.exists = element_names[item.id] ~= nil
             entry.fits = not item.hide_below or W >= item.hide_below
@@ -2746,8 +2763,8 @@ local function resolve_skin(skin, W, H, editing)
         end
         -- an item placed above the bar background lives on its own: it does not move with the bar
         -- and gets its own hover zone
-        entry.floating = not entry.is_zone and item.bottom >= skin.height
-        if not editing and not entry.visible and item.collapse and not entry.is_zone then
+        entry.floating = not entry.is_zone and not entry.is_widget and item.bottom >= skin.height
+        if not editing and not entry.visible and item.collapse and not entry.is_zone and not entry.is_widget then
             collapses[#collapses + 1] = {top = item.bottom + item.h, amount = item.collapse}
             lowered = lowered + item.collapse
         end
@@ -2773,7 +2790,7 @@ local function resolve_skin(skin, W, H, editing)
         entry.x1, entry.y1, entry.x2, entry.y2 = x1, y2 - item.h, math.max(x1, x2), y2
     end
     for _, entry in ipairs(list) do
-        if not entry.is_zone then entry.group = skin_item_group(skin, entry, list) end
+        if not entry.is_zone and not entry.is_widget then entry.group = skin_item_group(skin, entry, list) end
     end
 
     -- crowded items (narrow window): of two items with a priority that overlap or nearly touch,
@@ -2838,7 +2855,7 @@ local function skin_zones(skin, list, W, H, bar_h)
         end
     end
     for _, e in ipairs(list) do
-        if e.visible and not e.is_zone then
+        if e.visible and not e.is_zone and not e.is_widget then
             if e.group == "top" then
                 result.top_items[#result.top_items + 1] = rect_of(e)
             elseif own_by_id[e.group] then
@@ -3025,6 +3042,8 @@ layouts["skin"] = function ()
         local id = e.item.id
         if e.is_zone then
             -- a hover zone: no element
+        elseif e.is_widget then
+            if e.visible then osc_param.skin_volume = rect_of(e) end
         elseif e.visible then
             elements[id].visible = true
             local lo
@@ -4083,7 +4102,7 @@ local function osc_init()
 
     -- load layout
     osc_param.skin_zones, osc_param.skin_zone_override, osc_param.areas_strict = nil, nil, nil
-    osc_param.skin_wc = nil
+    osc_param.skin_wc, osc_param.skin_volume, osc_param.volume_rect = nil, nil, nil
     if state.is_image then
         layouts["modern-image"]()
     elseif layouts[user_opts.layout] then
@@ -5421,6 +5440,15 @@ editor.init({
     end,
     -- the window buttons as skin items at their usual places (top right of the top bar)
     window_controls = function () return window_controls_enabled() and user_opts.window_controls end,
+    -- the volume widget where it is now, as a skin item (nil when it is off)
+    default_volume_item = function ()
+        local r = osc_param.volume_rect
+        if not r or user_opts.volume_widget == "no" then return nil end
+        local W, H = osc_param.playresx, osc_param.playresy
+        local right = (r.x1 + r.x2) / 2 >= W / 2
+        return {id = "volume", anchor = right and "right" or "left", x = math.floor(right and r.x1 - W or r.x1),
+                w = math.floor(r.x2 - r.x1), bottom = math.floor(H - r.y2), h = math.floor(r.y2 - r.y1)}
+    end,
     default_wc_items = function ()
         local H = osc_param.playresy
         return {

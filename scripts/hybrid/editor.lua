@@ -20,6 +20,7 @@ local NAMES = {
     fullscreen = "Полный экран", info = "Статистика", ontop = "Поверх окон",
     screenshot = "Скриншот", cache_info = "Кэш", download = "Скачать",
     close = "Закрыть окно", maximize = "Развернуть окно", minimize = "Свернуть окно",
+    volume = "Регулятор громкости",
 }
 M.NAMES = NAMES
 
@@ -184,6 +185,11 @@ function M.with_zones(skin)
         for _, item in ipairs(api.default_wc_items()) do skin.items[#skin.items + 1] = item end
         skin.wc_edited = true
     end
+    -- the volume widget: without an item it stands at its usual place, so it is added there
+    local has_volume = false
+    for _, item in ipairs(skin.items) do has_volume = has_volume or item.id == "volume" end
+    local volume = not has_volume and api.default_volume_item()
+    if volume then skin.items[#skin.items + 1] = volume end
     return skin
 end
 
@@ -382,6 +388,14 @@ local function apply_drag(x, y)
         item.x = round(s.x + dx)
         if item.anchor == "stretch" then item.r = round(s.r - dx) end
         item.bottom = round(s.bottom - dy)
+        -- the volume widget takes its hover zone along
+        local zone = d.zone_index and ed.skin.items[d.zone_index]
+        if zone then
+            local zs = d.zone_start
+            zone.x = round(zs.x + dx)
+            if zone.anchor == "stretch" then zone.r = round(zs.r - dx) end
+            zone.bottom = round(zs.bottom - dy)
+        end
     else
         local corner = d.mode
         if corner:find("r") then
@@ -418,6 +432,11 @@ end
 local function remove_selected()
     local item = ed.selected and ed.skin.items[ed.selected]
     if not item then return end
+    if item.id == "volume" then
+        toast("Регулятор громкости не убирается: выключить его — volume_widget=no в hybrid.conf", 5)
+        M.render()
+        return
+    end
     push_undo()
     table.remove(ed.skin.items, ed.selected)
     -- buttons of a deleted zone go back to the bottom bar
@@ -701,7 +720,10 @@ local function properties(index)
         local items = {}
         local function add(entry) items[#items + 1] = entry end
 
-        if is_zone(item) then
+        if item.id == "volume" then
+            -- the volume widget: only its place and size (its look comes from hybrid.conf)
+            add({title = "Ширина — толщина регулятора, высота — его длина", icon = "info", action = function () return "keep" end})
+        elseif is_zone(item) then
             -- a zone covers a lot of the window: objects can be created on it from here
             if ed.right_at then
                 add({title = "Создать здесь…", icon = "add", submenu = create_menu(ed.right_at)})
@@ -1160,6 +1182,13 @@ local function on_left(info)
             local start = kind == "height" and {height = ed.skin.height} or api.copy(ed.skin.items[ed.selected])
             ed.drag = {mode = mode, index = ed.selected, mx = x, my = y, start = start,
                 dirty_before = dirty_before, confirm_before = confirm_before}
+            if mode == "move" and ed.skin.items[ed.selected].id == "volume" then
+                for i, other in ipairs(ed.skin.items) do
+                    if other.id == "zone_volume" then
+                        ed.drag.zone_index, ed.drag.zone_start = i, api.copy(other)
+                    end
+                end
+            end
         else
             ed.selected = nil
         end
@@ -1180,6 +1209,7 @@ local function on_left(info)
                 ed.dirty, ed.confirm_exit = d.dirty_before, d.confirm_before
             elseif d.mode == "move" then
                 reanchor(d.index)
+                if d.zone_index then reanchor(d.zone_index) end
                 relayout()
             end
             M.render()
