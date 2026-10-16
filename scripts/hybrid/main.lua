@@ -3038,6 +3038,10 @@ layouts["skin"] = function ()
                 lo.style = id == "time_codes" and osc_styles.time or osc_styles.cache
             elseif id == "speed_ruler" then
                 lo = place(id, 5, e)
+            elseif e.item.custom and e.item.custom.kind == "plate" then
+                lo = place(id, 5, e)
+                lo.layer = 12
+                if not e.item.alpha then lo.alpha[1] = 64 end
             elseif e.item.custom then
                 -- editor-made object: an icon of the menu font, or text in the OSC font
                 lo = place(id, 5, e)
@@ -4030,7 +4034,19 @@ local function osc_init()
     if user_opts.layout == "skin" then
         for _, item in ipairs(get_skin().items) do
             local custom = item.custom
-            if custom and item.id:match("^custom_") then
+            if custom and custom.kind == "plate" and item.id:match("^custom_") then
+                -- a rounded plate under other items (no clicks): color, transparency, corner radius
+                local radius, color = item.radius, item.color or "#121218"
+                ne = new_element(item.id, "custom")
+                ne.draw = function (element, ass, anim)
+                    local x1, y1, x2, y2 = get_element_hitbox(element)
+                    local r = math.min(radius or 1e9, (x2 - x1) / 2, (y2 - y1) / 2)
+                    custom_layer(ass, element, anim, color, 0)
+                    ass:draw_start()
+                    ass:round_rect_cw(x1, y1, x2, y2, r)
+                    ass:draw_stop()
+                end
+            elseif custom and item.id:match("^custom_") then
                 ne = new_element(item.id, "button")
                 ne.content = custom.kind == "text" and mp.command_native({"escape-ass", custom.text or ""})
                     or (custom.icon or "radio_button_unchecked")
@@ -5236,6 +5252,7 @@ menus.init(menu, {
         local file = skins.new_file_name()
         local skin = skins.copy(get_skin())
         skin.name = display_name
+        skin.based_on = skin.based_on or user_opts.skin
         local ok, err = skins.save(file, skin)
         if ok then choose_skin(file, "skin") end
         return ok, err
@@ -5259,7 +5276,8 @@ local editor_restore = {}
 editor.init({
     get_skin = get_skin,
     set_skin = function (skin) current_skin = skin end,
-    default_skin = function () return skins.copy(skins.DEFAULT) end,
+    -- the original look of the skin being edited (its shipped copy, or the skin it was copied from)
+    default_skin = function () return skins.default(get_skin().based_on or user_opts.skin) end,
     copy = skins.copy,
     save = function (skin) return skins.save(user_opts.skin, skin) end,
     resolve = function (skin)

@@ -1,0 +1,17 @@
+{
+  "name": "VHS",
+  "height": 72,
+  "theme": "red",
+  "seekbar_height": "small",
+  "items": [
+    {"id": "custom_1", "custom": {"kind": "text", "text": "PLAY ►"}, "anchor": "left", "x": 40, "w": 150, "bottom": 640, "h": 36, "size": 30, "font": "Consolas"},
+    {"id": "title", "anchor": "stretch", "x": 40, "r": 320, "bottom": 606, "h": 24, "size": 19, "font": "Consolas"},
+    {"id": "time_codes", "anchor": "right", "x": -262, "w": 222, "bottom": 640, "h": 36, "size": 30, "font": "Consolas"},
+    {"id": "custom_2", "custom": {"kind": "text", "text": "SP"}, "anchor": "right", "x": -262, "w": 40, "bottom": 606, "h": 24, "size": 19, "font": "Consolas"},
+    {"id": "seekbar", "anchor": "stretch", "x": 40, "r": 40, "bottom": 44, "h": 12},
+    {"id": "jump_backward", "anchor": "center", "x": -76, "w": 28, "bottom": 12, "h": 24, "priority": 10},
+    {"id": "play_pause", "anchor": "center", "x": -20, "w": 40, "bottom": 8, "h": 32, "priority": 10},
+    {"id": "jump_forward", "anchor": "center", "x": 52, "w": 28, "bottom": 12, "h": 24, "priority": 10},
+    {"id": "fullscreen", "anchor": "right", "x": -64, "w": 24, "bottom": 12, "h": 24, "priority": 9}
+  ]
+}

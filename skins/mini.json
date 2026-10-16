@@ -1,0 +1,15 @@
+{
+  "name": "Мини",
+  "height": 110,
+  "background": "none",
+  "seekbar_height": "small",
+  "items": [
+    {"id": "title", "anchor": "center", "x": -244, "w": 488, "bottom": 82, "h": 22, "size": 17},
+    {"id": "custom_1", "custom": {"kind": "plate"}, "anchor": "center", "x": -260, "w": 520, "bottom": 20, "h": 52, "alpha": 40},
+    {"id": "play_pause", "anchor": "center", "x": -250, "w": 40, "bottom": 26, "h": 40, "priority": 10, "bg": "circle"},
+    {"id": "time_codes", "anchor": "center", "x": -200, "w": 90, "bottom": 38, "h": 16, "size": 14},
+    {"id": "seekbar", "anchor": "center", "x": -104, "w": 264, "bottom": 38, "h": 16},
+    {"id": "pip", "anchor": "center", "x": 176, "w": 24, "bottom": 34, "h": 24, "priority": 8},
+    {"id": "fullscreen", "anchor": "center", "x": 216, "w": 24, "bottom": 34, "h": 24, "priority": 9}
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "name": "Неон Prism",
+  "height": 132,
+  "theme": "prism",
+  "seekbar_height": "large",
+  "glow": true,
+  "items": [
+    {"id": "title", "anchor": "stretch", "x": 28, "r": 28, "bottom": 102, "h": 24, "size": 20},
+    {"id": "chapter_title", "anchor": "stretch", "x": 28, "r": 28, "bottom": 82, "h": 16, "color": "#4FE0FF", "collapse": 18},
+    {"id": "time_codes", "anchor": "left", "x": 28, "w": 100, "bottom": 52, "h": 16, "font": "Consolas", "color": "#4FE0FF"},
+    {"id": "seekbar", "anchor": "stretch", "x": 140, "r": 28, "bottom": 50, "h": 20},
+    {"id": "menu", "anchor": "left", "x": 28, "w": 24, "bottom": 14, "h": 24, "priority": 6},
+    {"id": "sub_track", "anchor": "left", "x": 68, "w": 24, "bottom": 14, "h": 24, "priority": 5},
+    {"id": "jump_backward", "anchor": "center", "x": -80, "w": 28, "bottom": 14, "h": 24, "priority": 10},
+    {"id": "play_pause", "anchor": "center", "x": -22, "w": 44, "bottom": 4, "h": 44, "priority": 10, "bg": "circle"},
+    {"id": "jump_forward", "anchor": "center", "x": 52, "w": 28, "bottom": 14, "h": 24, "priority": 10},
+    {"id": "speed_ruler", "anchor": "right", "x": -340, "w": 150, "bottom": 8, "h": 38, "priority": 1},
+    {"id": "file_loop", "anchor": "right", "x": -172, "w": 24, "bottom": 14, "h": 24, "priority": 4},
+    {"id": "playlist", "anchor": "right", "x": -132, "w": 24, "bottom": 14, "h": 24, "priority": 7},
+    {"id": "pip", "anchor": "right", "x": -92, "w": 24, "bottom": 14, "h": 24, "priority": 8},
+    {"id": "fullscreen", "anchor": "right", "x": -52, "w": 24, "bottom": 14, "h": 24, "priority": 9}
+  ]
+}

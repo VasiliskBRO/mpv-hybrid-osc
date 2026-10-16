@@ -1,0 +1,16 @@
+{
+  "name": "Мобильный",
+  "height": 110,
+  "items": [
+    {"id": "title", "anchor": "stretch", "x": 32, "r": 32, "bottom": 664, "h": 28, "size": 22},
+    {"id": "jump_backward", "anchor": "center", "x": -150, "w": 48, "bottom": 336, "h": 48, "size": 40, "priority": 10},
+    {"id": "play_pause", "anchor": "center", "x": -44, "w": 88, "bottom": 316, "h": 88, "size": 60, "priority": 10, "bg": "circle", "bg_color": "#000000", "bg_alpha": 110},
+    {"id": "jump_forward", "anchor": "center", "x": 102, "w": 48, "bottom": 336, "h": 48, "size": 40, "priority": 10},
+    {"id": "seekbar", "anchor": "stretch", "x": 24, "r": 24, "bottom": 56, "h": 18},
+    {"id": "time_codes", "anchor": "left", "x": 28, "w": 100, "bottom": 22, "h": 18, "size": 15, "priority": 3},
+    {"id": "menu", "anchor": "right", "x": -188, "w": 28, "bottom": 16, "h": 28, "priority": 6},
+    {"id": "sub_track", "anchor": "right", "x": -144, "w": 28, "bottom": 16, "h": 28, "priority": 5},
+    {"id": "pip", "anchor": "right", "x": -100, "w": 28, "bottom": 16, "h": 28, "priority": 8},
+    {"id": "fullscreen", "anchor": "right", "x": -56, "w": 28, "bottom": 16, "h": 28, "priority": 9}
+  ]
+}

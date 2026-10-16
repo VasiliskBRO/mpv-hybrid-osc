@@ -36,6 +36,11 @@
 --   custom    objects made in the editor (id "custom_N"):
 --             {kind = "button", icon = "<Material Icons name>"} or {kind = "text", text = "..."}
 --             hover zones (id "zone_*"): {kind = "zone", name = "..."}
+--             plates (id "custom_N"): {kind = "plate"} - a rounded plate under other items;
+--             color, alpha and radius (corner radius, nil = round ends) set its look
+--   bg, bg_color, bg_alpha  bg = "circle": a round plate behind a button; font - font of a text item
+--   based_on  (skin level) the skin this one was copied from, for "Как по умолчанию";
+--             shipped originals live in skins/defaults/<name>.json
 
 local utils = require "mp.utils"
 
@@ -105,13 +110,14 @@ local function normalize(skin)
             if type(item.bg_color) ~= "string" or not item.bg_color:match("^#%x%x%x%x%x%x$") then item.bg_color = nil end
             item.bg_alpha = tonumber(item.bg_alpha)
             if type(item.font) ~= "string" or item.font == "" then item.font = nil end
+            item.radius = tonumber(item.radius) -- plate corner radius (nil = round ends)
             item.pad = tonumber(item.pad or item.zone) -- "zone" was the old name
             item.zone = nil
             if type(item.show_in) ~= "string" or item.show_in == "" then item.show_in = nil end
             if type(item.color) ~= "string" or not item.color:match("^#%x%x%x%x%x%x$") then item.color = nil end
             if type(item.tooltip) ~= "string" then item.tooltip = nil end
             local kind = type(item.custom) == "table" and item.custom.kind
-            if kind == "button" or kind == "text" or kind == "zone" then
+            if kind == "button" or kind == "text" or kind == "zone" or kind == "plate" then
                 item.custom = {kind = kind,
                     icon = type(item.custom.icon) == "string" and item.custom.icon or nil,
                     text = type(item.custom.text) == "string" and item.custom.text or nil,
@@ -148,6 +154,8 @@ local function normalize(skin)
     skin.bg_alpha = tonumber(skin.bg_alpha)
     if type(skin.bg_color) ~= "string" or not skin.bg_color:match("^#%x%x%x%x%x%x$") then skin.bg_color = nil end
     skin.glow = skin.glow == true or nil
+    -- the skin this one was copied from: "Как по умолчанию" goes back to its original
+    skin.based_on = type(skin.based_on) == "string" and skin.based_on:match("^[%w_%-]+$") and skin.based_on or nil
     return skin
 end
 
@@ -165,9 +173,22 @@ function M.load(name)
     return copy(M.DEFAULT), false
 end
 
+-- the original look of a skin: skins/defaults/<name>.json (shipped copies, never edited),
+-- the built-in standard skin when there is none
+function M.default(name)
+    local file = name and io.open(M.dir() .. "\\defaults\\" .. name .. ".json", "rb")
+    if file then
+        local text = file:read("*a")
+        file:close()
+        local skin = normalize(utils.parse_json(text or ""))
+        if skin then return skin end
+    end
+    return copy(M.DEFAULT)
+end
+
 -- JSON with a stable key order and one item per line, so the file stays readable
 local KEY_ORDER = {"id", "custom", "anchor", "x", "w", "r", "bottom", "h", "priority", "hide_below", "collapse",
-                   "size", "color", "alpha", "font", "bg", "bg_color", "bg_alpha", "pad", "show_in", "tooltip", "actions"}
+                   "size", "color", "alpha", "font", "bg", "bg_color", "bg_alpha", "radius", "pad", "show_in", "tooltip", "actions"}
 local LOOK_KEYS = {"theme", "seekbar_height", "background", "bg_inset", "bg_radius", "bg_color", "bg_alpha", "glow"}
 M.LOOK_KEYS = LOOK_KEYS
 
@@ -202,6 +223,7 @@ function M.encode(skin)
     local lines = {"{"}
     lines[#lines + 1] = string.format('  "name": %s,', utils.format_json(skin.name or ""))
     lines[#lines + 1] = string.format('  "height": %s,', json_value(skin.height or M.DEFAULT.height))
+    if skin.based_on then lines[#lines + 1] = string.format('  "based_on": %s,', utils.format_json(skin.based_on)) end
     for _, key in ipairs(LOOK_KEYS) do
         if skin[key] ~= nil then lines[#lines + 1] = string.format('  %q: %s,', key, json_value(skin[key])) end
     end

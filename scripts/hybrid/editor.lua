@@ -80,6 +80,7 @@ local BUILTIN = {
 
 local function item_name(item)
     if item.custom and item.custom.kind == "zone" then return "Зона «" .. (item.custom.name or item.id) .. "»" end
+    if item.custom and item.custom.kind == "plate" then return "Плашка" end
     if item.custom then
         if item.custom.kind == "text" then return "Надпись «" .. (item.custom.text or "") .. "»" end
         return item.tooltip or ("Кнопка «" .. icon_name(item.custom.icon) .. "»")
@@ -98,7 +99,7 @@ local T = {
     save_failed = "Не удалось сохранить: %s",
     unsaved = "Есть несохранённые изменения: «Сохранить» или ещё раз «Выйти» — выйти без сохранения",
     removed = "Убрано: %s (вернуть — «Шаг назад»)",
-    reset_done = "Вернул стандартную раскладку (не сохранено)",
+    reset_done = "Вернул исходный вид скина (не сохранено)",
     hidden = "не всегда виден",
 }
 
@@ -450,7 +451,10 @@ local function press_button(id)
         M.open_look()
     elseif id == "reset" then
         push_undo()
+        -- back to the original of this skin; its name and origin stay
+        local name, based_on = ed.skin.name, ed.skin.based_on
         ed.skin = M.with_zones(api.default_skin())
+        ed.skin.name, ed.skin.based_on = name, based_on
         ed.selected = nil
         relayout()
         toast(T.reset_done)
@@ -683,6 +687,11 @@ local function properties(index)
                              it.bg = v ~= "none" and "circle" or nil
                              it.bg_color = (v ~= "none" and v ~= "accent") and v or nil
                          end)})
+            elseif item.custom and item.custom.kind == "plate" then
+                local radii = {{"Круглые края", nil}, {"Без скругления", 0}, {"8 px", 8}, {"16 px", 16}, {"24 px", 24}}
+                add({title = "Скругление", icon = "rounded_corner", hint = find_name(radii, item.radius, item.radius and (item.radius .. " px")),
+                     submenu = choice_list("Скругление", radii, function () return ed.skin.items[index].radius end, index,
+                         function (it, v) it.radius = v end)})
             elseif item.id ~= "seekbar" and item.id ~= "speed_ruler" then
                 local fonts = {{"Как в теме", nil}, {"Моноширинный (Consolas)", "Consolas"}, {"Bahnschrift", "Bahnschrift"},
                                {"Segoe UI Light", "Segoe UI Light"}, {"Segoe UI Semibold", "Segoe UI Semibold"}}
@@ -690,13 +699,16 @@ local function properties(index)
                      submenu = choice_list("Шрифт", fonts, function () return ed.skin.items[index].font end, index,
                          function (it, v) it.font = v end)})
             end
+            local is_plate = item.custom and item.custom.kind == "plate"
             if item.id ~= "speed_ruler" then
-                local sizes = {{"Как в теме", nil}}
-                for _, s in ipairs({12, 14, 16, 18, 20, 22, 24, 28, 32, 36, 40, 48}) do sizes[#sizes + 1] = {s .. " px", s} end
-                add({title = is_button and "Размер иконки" or "Размер текста", icon = "format_size",
-                     hint = item.size and (item.size .. " px") or "как в теме",
-                     submenu = choice_list("Размер", sizes, function () return ed.skin.items[index].size end, index,
-                         function (it, v) it.size = v end)})
+                if not is_plate then
+                    local sizes = {{"Как в теме", nil}}
+                    for _, s in ipairs({12, 14, 16, 18, 20, 22, 24, 28, 32, 36, 40, 48}) do sizes[#sizes + 1] = {s .. " px", s} end
+                    add({title = is_button and "Размер иконки" or "Размер текста", icon = "format_size",
+                         hint = item.size and (item.size .. " px") or "как в теме",
+                         submenu = choice_list("Размер", sizes, function () return ed.skin.items[index].size end, index,
+                             function (it, v) it.size = v end)})
+                end
                 local colors = {{"Как в теме", nil}}
                 for _, c in ipairs(COLORS) do colors[#colors + 1] = c end
                 add({title = "Цвет", icon = "palette", hint = find_name(colors, item.color, item.color),
@@ -847,6 +859,10 @@ local function create_menu()
                     w = math.max(24, math.floor(#text * 6)), h = 20})
                 M.render()
             end)
+        end}
+        items[#items + 1] = {title = "Плашка (подложка под кнопки)", icon = "rectangle", action = function ()
+            add_item({id = new_custom_id(), custom = {kind = "plate"}, w = 240, h = 56})
+            toast("Плашка создана: растяни её под группу кнопок; цвет и скругление — в свойствах", 6)
         end}
         items[#items + 1] = {title = "Зона наведения", icon = "highlight_alt", action = function ()
             local used = {}
