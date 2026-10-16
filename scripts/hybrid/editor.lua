@@ -256,6 +256,51 @@ local function hsl(h, s, l)
         math.floor((b + m) * 255 + 0.5))
 end
 
+-- hue 0..360, saturation and value (brightness) 0..1 -> "#RRGGBB"
+local function hsv(h, s, v)
+    local l = v * (1 - s / 2)
+    local sl = (l <= 0 or l >= 1) and 0 or (v - l) / math.min(l, 1 - l)
+    return hsl(h % 360, sl, l)
+end
+
+-- "#RRGGBB" -> hue, saturation, value
+local function to_hsv(hex)
+    local r = tonumber(hex:sub(2, 3), 16) / 255
+    local g = tonumber(hex:sub(4, 5), 16) / 255
+    local b = tonumber(hex:sub(6, 7), 16) / 255
+    local mx, mn = math.max(r, g, b), math.min(r, g, b)
+    local d = mx - mn
+    local h = 0
+    if d > 0 then
+        if mx == r then h = 60 * (((g - b) / d) % 6)
+        elseif mx == g then h = 60 * ((b - r) / d + 2)
+        else h = 60 * ((r - g) / d + 4) end
+    end
+    return h, mx == 0 and 0 or d / mx, mx
+end
+
+-- a filled polygon; seam = also an outline of the same color (no hairlines between wheel sectors)
+local function poly(ass, pts, color, seam)
+    local parts = {}
+    for i, pt in ipairs(pts) do parts[#parts + 1] = string.format("%s %.1f %.1f", i == 1 and "m" or "l", pt[1], pt[2]) end
+    local c = bgr(color)
+    ass[#ass + 1] = string.format("{\\an7\\pos(0,0)\\bord%s\\shad0\\blur0\\1c&H%s&\\3c&H%s&\\1a&H00&\\p1}%s{\\p0}",
+        seam and "0.6" or "0", c, c, table.concat(parts, " "))
+end
+
+-- a ring around a point (the chosen spot on the wheel)
+local function marker(ass, x, y, r)
+    local pts = {}
+    for i = 0, 15 do
+        local a = i * math.pi / 8
+        pts[#pts + 1] = string.format("%s %.1f %.1f", i == 0 and "m" or "l", x + r * math.cos(a), y + r * math.sin(a))
+    end
+    ass[#ass + 1] = string.format("{\\an7\\pos(0,0)\\bord2\\shad0\\blur0\\3c&HFFFFFF&\\1a&HFF&\\p1}%s{\\p0}",
+        table.concat(pts, " "))
+end
+
+local WHEEL_SECTORS, WHEEL_RINGS = 36, 6
+
 local PICKER_LIGHT = {0.85, 0.72, 0.6, 0.48, 0.36, 0.24}
 local PICKER_GRID = {}
 for row, l in ipairs(PICKER_LIGHT) do
@@ -293,18 +338,82 @@ function picker.draw(ass, W, H)
     fill(ass, x0, y0, x0 + pw, y0 + ph, "#18181E", 0x08)
     text(ass, x0 + 16, y0 + 20, 4, p.title, 16)
 
-    -- the grid: 12 hues x 6 shades, then grays; a square of the chosen color gets a white frame
     local cs, step = 26, 29
     local gx, gy = x0 + 16, y0 + 40
+
+    -- "Круг / Сетка" switch
+    local wheel_mode = picker.mode ~= "grid"
+    for i, m in ipairs({{"wheel", "Круг"}, {"grid", "Сетка"}}) do
+        local tx1 = gx + 12 * step - 3 - (3 - i) * 64
+        local on = (m[1] == "wheel") == wheel_mode
+        fill(ass, tx1, y0 + 9, tx1 + 60, y0 + 31, on and accent or (p.hover == "mode" .. m[1] and "#5A5A66" or "#303036"), 0x10)
+        text(ass, tx1 + 30, y0 + 20, 5, m[2], 13)
+        region("mode", m[1], tx1, y0 + 9, tx1 + 60, y0 + 31)
+    end
+
     local function square(color, x, y, kind)
         fill(ass, x, y, x + cs, y + cs, color, 0)
         if color == p.value then frame(ass, x - 2, y - 2, x + cs + 2, y + cs + 2, "#FFFFFF", 0, 2)
         elseif p.hover == color then frame(ass, x - 1, y - 1, x + cs + 1, y + cs + 1, "#FFFFFF", 0x40, 1) end
         region(kind, color, x, y, x + cs, y + cs)
     end
-    for row, colors in ipairs(PICKER_GRID) do
-        for col, color in ipairs(colors) do
-            square(color, gx + (col - 1) * step, gy + (row - 1) * step + (row == #PICKER_GRID and 6 or 0), "color")
+    if wheel_mode then
+        -- the wheel: hue around, saturation from the center out, at the brightness of the slider
+        local R = 84
+        local cx, cy = gx + 88, gy + 86
+        for k = 1, WHEEL_RINGS do
+            local r1, r2 = R * (k - 1) / WHEEL_RINGS, R * k / WHEEL_RINGS
+            local sat = (k - 0.5) / WHEEL_RINGS
+            for i = 0, WHEEL_SECTORS - 1 do
+                local hue = i * 360 / WHEEL_SECTORS
+                local half = 180 / WHEEL_SECTORS
+                local pts = {}
+                for _, a in ipairs({hue - half, hue, hue + half}) do
+                    local rad = math.rad(a)
+                    pts[#pts + 1] = {cx + r2 * math.cos(rad), cy - r2 * math.sin(rad)}
+                end
+                if r1 > 0 then
+                    for _, a in ipairs({hue + half, hue - half}) do
+                        local rad = math.rad(a)
+                        pts[#pts + 1] = {cx + r1 * math.cos(rad), cy - r1 * math.sin(rad)}
+                    end
+                else
+                    pts[#pts + 1] = {cx, cy}
+                end
+                poly(ass, pts, hsv(hue, sat, p.v), true)
+            end
+        end
+        local mr = math.rad(p.h)
+        marker(ass, cx + p.s * R * math.cos(mr), cy - p.s * R * math.sin(mr), 6)
+        region("wheel", nil, cx - R - 4, cy - R - 4, cx + R + 4, cy + R + 4)
+        p.wheel = {cx = cx, cy = cy, R = R}
+
+        -- brightness slider
+        local sx1, sy1, sx2, sy2 = gx + 196, gy, gx + 220, gy + 172
+        local bands = 24
+        for i = 0, bands - 1 do
+            local y1 = sy1 + (sy2 - sy1) * i / bands
+            fill(ass, sx1, y1, sx2, y1 + (sy2 - sy1) / bands + 0.5, hsv(p.h, p.s, 1 - (i + 0.5) / bands), 0)
+        end
+        local my = sy1 + (1 - p.v) * (sy2 - sy1)
+        frame(ass, sx1 - 3, my - 3, sx2 + 3, my + 3, "#FFFFFF", 0, 2)
+        region("slider", nil, sx1 - 6, sy1 - 6, sx2 + 6, sy2 + 6)
+        p.slider = {y1 = sy1, y2 = sy2}
+        text(ass, gx + 234, gy + 20, 4, "Круг — оттенок", 12, "#BBBBBB")
+        text(ass, gx + 234, gy + 38, 4, "и насыщенность", 12, "#BBBBBB")
+        text(ass, gx + 234, gy + 62, 4, "Полоска — яркость", 12, "#BBBBBB")
+        text(ass, gx + 234, gy + 86, 4, "Можно тянуть", 12, "#BBBBBB")
+        text(ass, gx + 234, gy + 104, 4, "мышкой", 12, "#BBBBBB")
+        -- grays under the wheel, as in the grid
+        for col, color in ipairs(PICKER_GRID[#PICKER_GRID]) do
+            square(color, gx + (col - 1) * step, gy + 6 * step + 6, "color")
+        end
+    else
+        -- the grid: 12 hues x 6 shades, then grays; a square of the chosen color gets a white frame
+        for row, colors in ipairs(PICKER_GRID) do
+            for col, color in ipairs(colors) do
+                square(color, gx + (col - 1) * step, gy + (row - 1) * step + (row == #PICKER_GRID and 6 or 0), "color")
+            end
         end
     end
     local ry = gy + #PICKER_GRID * step + 18
@@ -754,8 +863,17 @@ local function load_recent()
     local data = utils.parse_json(file:read("*a") or "")
     file:close()
     picker.recent = {}
+    if type(data) == "table" and (data.mode == "grid" or data.mode == "wheel") then picker.mode = data.mode end
     for _, c in ipairs(type(data) == "table" and type(data.recent) == "table" and data.recent or {}) do
         if is_hex(c) and #picker.recent < 12 then picker.recent[#picker.recent + 1] = c end
+    end
+end
+
+local function save_colors()
+    local file = io.open(RECENT_PATH, "w")
+    if file then
+        file:write(utils.format_json({recent = picker.recent, mode = picker.mode or "wheel"}))
+        file:close()
     end
 end
 
@@ -766,11 +884,15 @@ local function remember_color(color)
         if c ~= color and #list < 12 then list[#list + 1] = c end
     end
     picker.recent = list
-    local file = io.open(RECENT_PATH, "w")
-    if file then
-        file:write(utils.format_json({recent = list}))
-        file:close()
-    end
+    save_colors()
+end
+
+-- the wheel follows a color chosen elsewhere (grid, recent, code); grays keep the hue
+local function sync_hsv(p, value)
+    if not is_hex(value) then return end
+    local h, sat, v = to_hsv(value)
+    if sat > 0 then p.h = h end
+    p.s, p.v = sat, v
 end
 
 -- spec: title, value (current), extras = {{name, value}} for choices that are not a color,
@@ -778,13 +900,16 @@ end
 function picker.open(spec)
     load_recent()
     spec.dirty_before, spec.confirm_before = ed.dirty, ed.confirm_exit
+    spec.h, spec.s, spec.v = 0, 0, 1
+    sync_hsv(spec, spec.value)
     ed.picker = spec
     M.render()
 end
 
 -- every pick shows at once on the element; the whole picking is one undo step
-function picker.choose(value)
+function picker.choose(value, from_wheel)
     local p = ed.picker
+    if not from_wheel then sync_hsv(p, value) end
     if not p.pushed then
         push_undo()
         p.pushed = true
@@ -798,6 +923,7 @@ end
 local function picker_close()
     local p = ed.picker
     ed.picker = nil
+    picker.dragging = nil
     M.render()
     if p.back then p.back() end
 end
@@ -820,7 +946,20 @@ end
 function picker.click(x, y)
     local r = picker.hit(x, y)
     if not r then return end
-    if r.kind == "color" then picker.choose(r.value)
+    if r.kind == "wheel" then
+        local w = ed.picker.wheel
+        local dx, dy = x - w.cx, y - w.cy
+        if dx * dx + dy * dy > (w.R + 4) ^ 2 then return end -- a corner of the box, not the wheel
+        picker.dragging = "wheel"
+        picker.drag(x, y)
+    elseif r.kind == "slider" then
+        picker.dragging = "slider"
+        picker.drag(x, y)
+    elseif r.kind == "mode" then
+        picker.mode = r.value
+        save_colors()
+        M.render()
+    elseif r.kind == "color" then picker.choose(r.value)
     elseif r.kind == "extra" then picker.choose(ed.picker.extras[r.value][2])
     elseif r.kind == "done" then picker.done()
     elseif r.kind == "cancel" then picker.cancel()
@@ -836,6 +975,22 @@ function picker.click(x, y)
             picker.choose(color)
         end)
     end
+end
+
+-- dragging on the wheel (hue, saturation) or the slider (brightness)
+function picker.drag(x, y)
+    local p = ed.picker
+    if picker.dragging == "wheel" then
+        local w = p.wheel
+        local dx, dy = x - w.cx, y - w.cy
+        p.h = math.deg(math.atan2(-dy, dx)) % 360
+        p.s = math.min(1, math.sqrt(dx * dx + dy * dy) / w.R)
+    elseif picker.dragging == "slider" then
+        p.v = math.max(0, math.min(1, 1 - (y - p.slider.y1) / (p.slider.y2 - p.slider.y1)))
+    else
+        return
+    end
+    picker.choose(hsv(p.h, p.s, p.v), true)
 end
 
 -- non-color entries of a choice list ("Как в теме", "Нет", "Круг цвета темы"...)
@@ -1345,9 +1500,14 @@ end
 
 local function on_mouse_move()
     local x, y = mouse()
+    if ed.picker and picker.dragging then
+        picker.drag(x, y)
+        return
+    end
     if ed.picker then
         local r = picker.hit(x, y)
         local hover = r and (r.kind == "color" and r.value or r.kind .. (r.value or "")) or nil
+        if r and (r.kind == "wheel" or r.kind == "slider") then hover = nil end
         if hover ~= ed.picker.hover then
             ed.picker.hover = hover
             M.render()
@@ -1373,7 +1533,7 @@ end
 local function on_left(info)
     local x, y = mouse()
     if ed.picker then
-        if info.event == "down" then picker.click(x, y) end
+        if info.event == "down" then picker.click(x, y) else picker.dragging = nil end
         return
     end
     if info.event == "down" then
