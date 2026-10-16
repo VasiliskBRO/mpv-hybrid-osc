@@ -92,7 +92,7 @@ M.item_name = item_name
 
 local T = {
     save = "Сохранить", undo = "Шаг назад", create = "Создать объект", look = "Оформление", reset = "Как по умолчанию", exit = "Выйти",
-    hint = "Тащи мышкой, за уголок — размер · правый клик — свойства · стрелки — точно · Delete — убрать",
+    hint = "Тащи мышкой, за уголок — размер · правый клик — свойства (по пустому месту — создать) · стрелки — точно · Delete — убрать",
     height = "тёмная подложка",
     zone = "зона наведения",
     saved = "Скин сохранён",
@@ -287,27 +287,31 @@ function M.render()
         text(ass, math.max(10, math.min(sel.x1, W - 300)), ly, 1, label, 14, accent)
     end
 
-    -- toolbar
-    local buttons = {
-        {"save", T.save, ed.dirty}, {"undo", T.undo, #ed.undo > 0}, {"create", T.create, true},
-        {"look", T.look, true}, {"reset", T.reset, true}, {"exit", T.exit, true},
-    }
-    local gap, bh = 8, 30
-    local bw = math.min(150, math.floor((W - 40 - (#buttons - 1) * gap) / #buttons))
-    local total = #buttons * bw + (#buttons - 1) * gap
-    local x = (W - total) / 2
+    -- toolbar: at the top or in the middle of the window ("⇅"); hidden while an object is dragged
     ed.buttons = {}
-    fill(ass, x - 10, 6, x + total + 10, 6 + bh + 34, "#000000", 0x50)
-    for _, b in ipairs(buttons) do
-        local x1, y1, x2, y2 = x, 12, x + bw, 12 + bh
-        local hovered = ed.hover == b[1]
-        local color = (b[1] == "save" and b[3]) and accent or "#303030"
-        fill(ass, x1, y1, x2, y2, hovered and "#505050" or color, b[3] and 0x10 or 0x80)
-        text(ass, (x1 + x2) / 2, (y1 + y2) / 2, 5, b[2], 14, b[3] and "#FFFFFF" or "#9A9A9A")
-        ed.buttons[#ed.buttons + 1] = {id = b[1], x1 = x1, y1 = y1, x2 = x2, y2 = y2, enabled = b[3]}
-        x = x2 + gap
+    if not ed.drag then
+        local buttons = {
+            {"save", T.save, ed.dirty}, {"undo", T.undo, #ed.undo > 0}, {"create", T.create, true},
+            {"look", T.look, true}, {"reset", T.reset, true}, {"exit", T.exit, true},
+        }
+        local gap, bh, mw = 8, 30, 36 -- mw: width of the "⇅" button
+        local bw = math.min(150, math.floor((W - 40 - mw - #buttons * gap) / #buttons))
+        local total = #buttons * bw + #buttons * gap + mw
+        local x = (W - total) / 2
+        local top = M.toolbar_mid and math.floor(H / 2 - (bh + 34) / 2) or 6
+        buttons[#buttons + 1] = {"move", "⇅", true, mw}
+        fill(ass, x - 10, top, x + total + 10, top + bh + 34, "#000000", 0x50)
+        for _, b in ipairs(buttons) do
+            local x1, y1, x2, y2 = x, top + 6, x + (b[4] or bw), top + 6 + bh
+            local hovered = ed.hover == b[1]
+            local color = (b[1] == "save" and b[3]) and accent or "#303030"
+            fill(ass, x1, y1, x2, y2, hovered and "#505050" or color, b[3] and 0x10 or 0x80)
+            text(ass, (x1 + x2) / 2, (y1 + y2) / 2, 5, b[2], b[1] == "move" and 18 or 14, b[3] and "#FFFFFF" or "#9A9A9A")
+            ed.buttons[#ed.buttons + 1] = {id = b[1], x1 = x1, y1 = y1, x2 = x2, y2 = y2, enabled = b[3]}
+            x = x2 + gap
+        end
+        text(ass, W / 2, top + 6 + bh + 15, 5, ed.toast or T.hint, 12, ed.toast and accent or "#DDDDDD")
     end
-    text(ass, W / 2, 12 + bh + 15, 5, ed.toast or T.hint, 12, ed.toast and accent or "#DDDDDD")
 
     overlay.data = table.concat(ass, "\n")
     overlay:update()
@@ -453,6 +457,10 @@ local function press_button(id)
         M.open_create()
     elseif id == "look" then
         M.open_look()
+    elseif id == "move" then
+        -- the toolbar goes to the middle of the window and back (stays so until mpv closes)
+        M.toolbar_mid = not M.toolbar_mid
+        M.render()
     elseif id == "reset" then
         push_undo()
         -- back to the original of this skin; its name and origin stay
@@ -476,7 +484,7 @@ end
 
 -- properties menu -------------------------------------------------------------------------
 
-local look_menu, skin_choice
+local look_menu, skin_choice, create_menu
 
 -- what a button can do; command nil = what the element does by itself
 local ACTIONS = {
@@ -687,6 +695,10 @@ local function properties(index)
         local function add(entry) items[#items + 1] = entry end
 
         if is_zone(item) then
+            -- a zone covers a lot of the window: objects can be created on it from here
+            if ed.right_at then
+                add({title = "Создать здесь…", icon = "add", submenu = create_menu(ed.right_at)})
+            end
             add({title = "Название", icon = "edit", hint = item.custom.name, action = function ()
                 ask_text("Название зоны:", item.custom.name, function (text)
                     if text == "" then return end
@@ -853,17 +865,33 @@ local function new_custom_id()
     return "custom_" .. n
 end
 
--- new objects appear above the middle of the bar, then the user drags them
-local function add_item(item)
+-- new objects appear in the middle of the window (at = {x, y}: centered under the cursor),
+-- then the user drags them
+local function add_item(item, at)
     push_undo()
     item.h = item.h or 24
+    local W, H = api.dims()
+    if at then
+        local w = item.w or 24
+        local cx = math.max(w / 2, math.min(W - w / 2, at.x))
+        local cy = math.max(item.h / 2, math.min(H - item.h / 2, at.y))
+        if item.anchor ~= "stretch" then
+            item.anchor, item.x = "left", round(cx - w / 2)
+        end
+        item.bottom = round(H - cy - item.h / 2)
+        ed.skin.items[#ed.skin.items + 1] = item
+        ed.selected = #ed.skin.items
+        reanchor(ed.selected)
+        relayout()
+        toast("Создано: " .. item_name(item) .. " — перетащи, если нужно, правый клик — свойства", 5)
+        return
+    end
     if not item.anchor then
         item.anchor = "center"
         item.x = -math.floor((item.w or 24) / 2)
         -- go up until the spot is free, so new objects do not pile on each other
-        local W, H = api.dims()
         local x1, x2 = W / 2 + item.x, W / 2 + item.x + (item.w or 24)
-        local bottom = 70
+        local bottom = math.floor(H / 2 - item.h / 2)
         for _ = 1, 12 do
             local y2 = H - bottom
             local y1 = y2 - item.h
@@ -885,7 +913,8 @@ local function add_item(item)
     toast("Создано: " .. item_name(item) .. " — перетащи на место, правый клик — свойства", 5)
 end
 
-local function create_menu()
+-- at = {x, y}: "Создать здесь…" by a right click, the object goes under the cursor
+create_menu = function (at)
     return function ()
         local items = {}
         items[#items + 1] = {title = "Готовая кнопка", icon = "smart_button", submenu = function ()
@@ -893,7 +922,7 @@ local function create_menu()
             for _, p in ipairs(PRESETS) do
                 list[#list + 1] = {title = p[1], icon = p[2], action = function ()
                     add_item({id = new_custom_id(), custom = {kind = "button", icon = p[2]},
-                        w = 24, h = 24, tooltip = p[1], actions = {left = p[3]}})
+                        w = 24, h = 24, tooltip = p[1], actions = {left = p[3]}}, at)
                 end}
             end
             return {title = "Готовая кнопка", items = list}
@@ -902,7 +931,7 @@ local function create_menu()
             local list = {}
             for _, i in ipairs(ICONS) do
                 list[#list + 1] = {title = i[2], icon = i[1], action = function ()
-                    add_item({id = new_custom_id(), custom = {kind = "button", icon = i[1]}, w = 24, h = 24})
+                    add_item({id = new_custom_id(), custom = {kind = "button", icon = i[1]}, w = 24, h = 24}, at)
                 end}
             end
             return {title = "Иконка кнопки", items = list}
@@ -911,12 +940,12 @@ local function create_menu()
             ask_text("Текст надписи:", "", function (text)
                 if text == "" then return end
                 add_item({id = new_custom_id(), custom = {kind = "text", text = text},
-                    w = math.max(24, math.floor(#text * 6)), h = 20})
+                    w = math.max(24, math.floor(#text * 6)), h = 20}, at)
                 M.render()
             end)
         end}
         items[#items + 1] = {title = "Плашка (подложка под кнопки)", icon = "rectangle", action = function ()
-            add_item({id = new_custom_id(), custom = {kind = "plate"}, w = 240, h = 56})
+            add_item({id = new_custom_id(), custom = {kind = "plate"}, w = 240, h = 56}, at)
             toast("Плашка создана: растяни её под группу кнопок; цвет и скругление — в свойствах", 6)
         end}
         items[#items + 1] = {title = "Зона наведения", icon = "highlight_alt", action = function ()
@@ -926,7 +955,7 @@ local function create_menu()
             while used["zone_" .. n] do n = n + 1 end
             local W, H = api.dims()
             add_item({id = "zone_" .. n, custom = {kind = "zone", name = "Зона " .. n},
-                anchor = "center", x = -100, w = 200, bottom = math.floor(H / 2 - 60), h = 120})
+                anchor = "center", x = -100, w = 200, bottom = math.floor(H / 2 - 60), h = 120}, at)
             toast("Зона создана: растяни её, потом у кнопки «Появляется в зоне» выбери её", 6)
         end}
         local missing = {}
@@ -957,10 +986,10 @@ local function create_menu()
                     list[#list + 1] = {title = NAMES[id] or id, action = function ()
                         local default = defaults[id]
                         if default and default.anchor == "stretch" then
-                            add_item(api.copy(default)) -- spans the window at its standard height
+                            add_item(api.copy(default), at) -- spans the window at its standard height
                         else
                             local w = default and default.w or (id == "speed" and 42 or (id == "cache_info" and 70 or 24))
-                            add_item({id = id, w = w, h = default and default.h or 24})
+                            add_item({id = id, w = w, h = default and default.h or 24}, at)
                         end
                     end}
                 end
@@ -968,7 +997,7 @@ local function create_menu()
             if #list == 0 then list[1] = {title = "Все встроенные элементы уже на панели", muted = true} end
             return {title = "Встроенный элемент", items = list}
         end}
-        return {title = "Создать объект", items = items}
+        return {title = at and "Создать здесь" or "Создать объект", items = items}
     end
 end
 
@@ -1153,11 +1182,16 @@ local bindings
 local MOUSE_SECTION = "hybrid_editor_mouse"
 
 local function on_right()
-    local kind, value = hit(mouse())
+    local x, y = mouse()
+    ed.right_at = {x = x, y = y} -- for "Создать здесь…" in the properties of a zone
+    local kind, value = hit(x, y)
     if kind == "item" then
         open_properties(value)
     elseif kind == "handle" and ed.selected then
         open_properties(ed.selected)
+    elseif kind == nil then
+        -- empty spot: create an object right here
+        open_menu("skin-create", create_menu({x = x, y = y}))
     end
 end
 
