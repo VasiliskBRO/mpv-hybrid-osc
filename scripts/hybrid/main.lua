@@ -18,6 +18,8 @@ local opt = require "mp.options"
 local utils = require "mp.utils"
 local menu = require "menu"
 local menus = require "menus"
+local skins = require "skin"
+local editor = require "editor"
 mp.set_property("osc", "no")
 
 -- Parameters
@@ -26,7 +28,8 @@ mp.set_property("osc", "no")
 local user_opts = {
     -- Language and display
     language = "ru",                       -- set language: "ru" or "default" (English)
-    layout = "default",                    -- set layout (only "default" is available)
+    layout = "default",                    -- "default" (classic hybrid bar) or "skin" (positions from skins/<skin>.json)
+    skin = "standard",                     -- skin file name in ~~/skins/ (without .json), used with layout=skin
     icon_theme = "fluent",                 -- set icon theme. accepts "fluent" or "material"
     icon_style = "mixed",                  -- "mixed", "filled", "outline"
     font = "Segoe UI",                     -- font for the OSC text
@@ -2123,7 +2126,12 @@ local function download_done(success, _, error)
     state.downloading = false
 end
 
+-- name -> type of the elements created by the last osc_init (prepare_elements() turns
+-- "elements" into a plain list, the skin editor still needs to look them up by name)
+local element_names = {}
+
 local function new_element(name, type)
+    element_names[name] = type
     elements[name] = {}
     elements[name].type = type
     elements[name].name = name
@@ -2584,6 +2592,233 @@ layouts["default"] = function ()
     end
 end
 
+--
+-- Skin layout: element positions come from a skin file (see skin.lua)
+--
+local current_skin
+
+local function get_skin()
+    if not current_skin then current_skin = skins.load(user_opts.skin) end
+    return current_skin
+end
+
+-- button styles by element; everything not listed is a side button (control_3)
+local SKIN_STYLES = {
+    play_pause = "control_1",
+    jump_backward = "control_2", jump_forward = "control_2",
+    playlist_prev = "control_2", playlist_next = "control_2",
+    chapter_prev = "control_2", chapter_next = "control_2",
+    speed = "speed",
+}
+
+-- elements that only make sense in some situations
+local function skin_item_allowed(id)
+    if id == "title" then return user_opts.show_title end
+    if id == "chapter_title" then return user_opts.show_chapter_title and (state.chapter or -1) >= 0 end
+    if id == "time_codes" then return (state.duration or 0) > 0 end
+    if id == "playlist_prev" or id == "playlist_next" then return state.playlist_count > 1 end
+    if id == "chapter_prev" or id == "chapter_next" then return #state.chapter_list > 0 end
+    if id == "audio_track" then return state.audio_track_count > 0 end
+    return true
+end
+
+-- point of a box for an ASS alignment (numpad layout: 7 8 9 / 4 5 6 / 1 2 3)
+local function an_point(x1, y1, x2, y2, an)
+    local col = (an - 1) % 3
+    local row = math.floor((an - 1) / 3)
+    local x = col == 0 and x1 or (col == 1 and (x1 + x2) / 2 or x2)
+    local y = row == 0 and y2 or (row == 1 and (y1 + y2) / 2 or y1)
+    return x, y
+end
+
+-- boxes of all skin items for a window W x H (virtual px), with visibility;
+-- returns the list and the height of the bar background.
+-- editing: every existing item is shown (the editor places items that appear only sometimes),
+-- nothing collapses or gets hidden for lack of space; entry.shown tells the normal visibility
+local function resolve_skin(skin, W, H, editing)
+    local list = {}
+    local collapses, lowered = {}, 0
+    for _, item in ipairs(skin.items) do
+        local entry = {item = item}
+        entry.exists = element_names[item.id] ~= nil
+        entry.fits = not item.hide_below or W >= item.hide_below
+        entry.shown = entry.exists and entry.fits and skin_item_allowed(item.id)
+        entry.visible = editing and entry.exists or entry.shown
+        if not editing and not entry.visible and item.collapse then
+            collapses[#collapses + 1] = {top = item.bottom + item.h, amount = item.collapse}
+            lowered = lowered + item.collapse
+        end
+        list[#list + 1] = entry
+    end
+    for _, entry in ipairs(list) do
+        local item = entry.item
+        local dy = 0
+        for _, c in ipairs(collapses) do
+            if item.bottom >= c.top - 0.5 then dy = dy + c.amount end
+        end
+        local x1, x2
+        if item.anchor == "stretch" then
+            x1, x2 = item.x, W - item.r
+        else
+            local ax = item.anchor == "center" and W / 2 or (item.anchor == "right" and W or 0)
+            -- the time text decides its own width (it grows with hours)
+            local w = item.id == "time_codes" and get_time_codes_width() or item.w
+            x1 = ax + item.x
+            x2 = x1 + w
+        end
+        local y2 = H - (item.bottom - dy)
+        entry.x1, entry.y1, entry.x2, entry.y2 = x1, y2 - item.h, math.max(x1, x2), y2
+    end
+
+    -- crowded items (narrow window): of two items with a priority that overlap or nearly touch,
+    -- the less important one is hidden; items without priority (title, seekbar) take no part,
+    -- so an item placed over the seekbar on purpose stays
+    local order = {}
+    for _, entry in ipairs(list) do
+        if entry.visible and entry.item.priority and not editing then order[#order + 1] = entry end
+    end
+    local function prio(entry) return entry.item.priority or math.huge end
+    table.sort(order, function (a, b) return prio(a) > prio(b) end)
+    local kept = {}
+    local gap = 6 -- neighbours closer than this count as overlapping
+    for _, entry in ipairs(order) do
+        for _, other in ipairs(kept) do
+            if prio(other) > prio(entry) and entry.x1 < other.x2 + gap and other.x1 < entry.x2 + gap
+               and entry.y1 < other.y2 - 1 and other.y1 < entry.y2 - 1 then
+                entry.visible = false
+                entry.crowded = true
+                break
+            end
+        end
+        if entry.visible then kept[#kept + 1] = entry end
+    end
+    return list, math.max(0, skin.height - lowered)
+end
+
+-- mouse buttons of skin item actions -> element event names
+local SKIN_EVENTS = {
+    left = {"mbtn_left_up", "mbtn_left_down", "shift+mbtn_left_down"},
+    right = {"mbtn_right_up", "mbtn_right_down"},
+    wheel_up = {"wheel_up_press"},
+    wheel_down = {"wheel_down_press"},
+}
+
+-- look and behaviour set in the editor: icon size, color, transparency, tooltip, actions
+local function apply_skin_item(id, lo, item)
+    local element = elements[id]
+    if lo.style and item.size then
+        lo.style = lo.style:gsub("\\fs[%d%.]+", "\\fs" .. item.size)
+    end
+    if lo.style and item.color then
+        local color = "\\1c&H" .. osc_color_convert(item.color) .. "&"
+        local replaced
+        lo.style, replaced = lo.style:gsub("\\1c&H%x+&", color)
+        if replaced == 0 then lo.style = lo.style .. "{" .. color .. "}" end
+    end
+    if item.alpha then lo.alpha[1] = item.alpha end
+    if element.type ~= "button" then return end
+    if item.tooltip and item.tooltip ~= "" then element.tooltipF = item.tooltip end
+    for button, command in pairs(item.actions or {}) do
+        local events = SKIN_EVENTS[button]
+        if events then
+            -- the editor's action replaces everything the element did with this button
+            for _, event in ipairs(events) do element.eventresponder[event] = nil end
+            if command ~= "ignore" then
+                element.eventresponder[events[1]] = function () mp.command(command) end
+            end
+        end
+    end
+end
+
+layouts["skin"] = function ()
+    local W, H = osc_param.playresx, osc_param.playresy
+    local list, bar_h = resolve_skin(get_skin(), W, H, state.skin_editing)
+
+    osc_param.video_margins.b = bar_h / H
+    osc_param.areas = {}
+
+    -- mouse input covers the bar and every item, even one dragged above the bar
+    local ix1, iy1, ix2, iy2 = 0, H - bar_h, W, H
+    for _, e in ipairs(list) do
+        if e.visible then
+            ix1, iy1 = math.min(ix1, e.x1), math.min(iy1, e.y1)
+            ix2, iy2 = math.max(ix2, e.x2), math.max(iy2, e.y2)
+        end
+    end
+    add_area("input", ix1, iy1, ix2, iy2)
+    add_area("showhide", 0, get_align(-1 + (2 * user_opts.deadzonesize), iy1, 0, 0), W, H)
+
+    setup_bg_elements(0, H, W, bar_h, user_opts.fade_transparency_strength, user_opts.window_fade_transparency_strength)
+
+    local function place(id, an, e)
+        local x, y = an_point(e.x1, e.y1, e.x2, e.y2, an)
+        local lo = add_layout(id)
+        lo.geometry = {x = x, y = y, an = an, w = e.x2 - e.x1, h = e.y2 - e.y1}
+        return lo
+    end
+
+    for _, e in ipairs(list) do
+        local id = e.item.id
+        if e.visible then
+            elements[id].visible = true
+            local lo
+            if id == "title" or id == "chapter_title" then
+                lo = place(id, 1, e)
+                lo.layer = 48
+                lo.alpha[3] = 0
+                lo.style = string.format("%s{\\clip(%f,%f,%f,%f)}", osc_styles[id], 0, 0, e.x2, e.y2)
+                if id == "title" then state.title_max_w = e.x2 - e.x1 else state.chapter_title_max_w = e.x2 - e.x1 end
+            elseif id == "seekbar" then
+                local bg_h = seekbar_height_style.height
+                local ne = new_element("seekbarbg", "box")
+                ne.visible = user_opts.nibbles_style ~= "gap"
+                lo = add_layout("seekbarbg")
+                lo.geometry = {x = (e.x1 + e.x2) / 2, y = (e.y1 + e.y2) / 2, an = 5, w = e.x2 - e.x1, h = bg_h}
+                lo.layer = 15
+                lo.style = osc_styles.seekbar_bg
+                lo.box.radius = user_opts.slider_rounded_corners and seekbar_height_style.radius or 0
+                lo.alpha[1] = 128
+                lo = place(id, 5, e)
+                lo.layer = 49
+                lo.style = osc_styles.seekbar_fg
+                lo.slider.handle_color = user_opts.seek_handle_color
+                lo.slider.handle_border = user_opts.seek_handle_border_color
+                lo.slider.gap = ((e.y2 - e.y1) - bg_h) / 2.0
+                lo.slider.radius = user_opts.slider_rounded_corners and seekbar_height_style.radius or 0
+                lo.slider.tooltip_an = 2
+            elseif id == "time_codes" or id == "cache_info" then
+                lo = place(id, 4, e)
+                lo.layer = 48
+                lo.alpha[3] = 0
+                lo.style = id == "time_codes" and osc_styles.time or osc_styles.cache
+            elseif id == "speed_ruler" then
+                lo = place(id, 5, e)
+            elseif e.item.custom then
+                -- editor-made object: an icon of the menu font, or text in the OSC font
+                lo = place(id, 5, e)
+                local text = e.item.custom.kind == "text"
+                lo.style = string.format("{\\bord%d\\3c&H0&\\1c&H%s&\\fs%d\\fn%s}", text and 1 or 0,
+                    osc_color_convert(user_opts.side_buttons_color), text and 16 or 24,
+                    text and user_opts.font or material_font)
+            else
+                lo = place(id, 5, e)
+                lo.style = osc_styles[SKIN_STYLES[id] or "control_3"]
+            end
+            apply_skin_item(id, lo, e.item)
+        elseif e.exists then
+            elements[id].visible = false
+        end
+    end
+
+    if user_opts.persistent_progress or state.persistent_progress_toggle then
+        local lo = add_layout("persistent_seekbar")
+        lo.geometry = {x = W / 2, y = H, an = 5, w = W, h = user_opts.persistent_progress_height}
+        lo.style = osc_styles.seekbar_fg
+        lo.slider.gap = (18 - seekbar_height_style.height) / 2.0
+        lo.slider.tooltip_an = 0
+    end
+end
+
 layouts["modern-image"] = function ()
     local osc_geo = {
         w = osc_param.playresx,
@@ -2797,6 +3032,7 @@ local function osc_init()
     osc_param.video_margins = {l = 0, r = 0, t = 0, b = 0}
 
     elements = {}
+    element_names = {}
 
     -- some often needed stuff
     local pl_count = state.playlist_count
@@ -3541,6 +3777,18 @@ local function osc_init()
     ne.eventresponder["wheel_up_press"] = function () set_volume_value(state.volume + user_opts.volume_step) end
     ne.eventresponder["wheel_down_press"] = function () set_volume_value(state.volume - user_opts.volume_step) end
 
+    -- objects made in the skin editor: buttons with an icon and text labels
+    if user_opts.layout == "skin" then
+        for _, item in ipairs(get_skin().items) do
+            local custom = item.custom
+            if custom and item.id:match("^custom_") then
+                ne = new_element(item.id, "button")
+                ne.content = custom.kind == "text" and mp.command_native({"escape-ass", custom.text or ""})
+                    or (custom.icon or "radio_button_unchecked")
+            end
+        end
+    end
+
     -- load layout
     if state.is_image then
         layouts["modern-image"]()
@@ -3839,7 +4087,7 @@ local function process_event(source, what)
 end
 
 local function do_enable_keybindings()
-    if state.enabled and not state.menu_open then
+    if state.enabled and not state.menu_open and not state.skin_editing then
         if not state.showhide_enabled then
             mp.enable_key_bindings("showhide", "allow-vo-dragging+allow-hide-cursor")
             mp.enable_key_bindings("showhide_wc", "allow-vo-dragging+allow-hide-cursor")
@@ -3950,6 +4198,7 @@ local function render()
     local function update_input_area(area_name, visible, enabled_key, enable_fn)
         local areas = osc_param.areas[area_name]
         if not areas then return end
+        if state.skin_editing then visible = false end -- the skin editor owns the mouse
         for _, cords in ipairs(areas) do
             if visible then
                 set_virt_mouse_area(cords.x1, cords.y1, cords.x2, cords.y2, area_name)
@@ -3962,7 +4211,7 @@ local function render()
     end
 
     -- sync input area to cursor position
-    local want_input = (state.osc_visible or state.vol_visible) and not state.menu_open
+    local want_input = (state.osc_visible or state.vol_visible) and not state.menu_open and not state.skin_editing
     if want_input ~= state.input_enabled then
         if want_input then
             mp.enable_key_bindings("input")
@@ -4635,10 +4884,96 @@ menu.setup({
     icon_font = material_font,
     accent = user_opts.seekbarfg_color,
     bg = user_opts.osc_color,
-    on_open = function () osc_suspend(true) end,
-    on_close = function () osc_suspend(false) end,
+    -- the skin editor opens its property menus over a visible bar
+    on_open = function () if not state.skin_editing then osc_suspend(true) end end,
+    on_close = function ()
+        if state.skin_editing then editor.menu_closed() else osc_suspend(false) end
+    end,
 })
-menus.init(menu)
+-- skin choice from the menu (remembered in ~~state/hybrid-state.json)
+local function choose_skin(name, layout)
+    if editor.is_open() then editor.close() end
+    user_opts.layout = layout or "skin"
+    if name then user_opts.skin = name end
+    current_skin = nil
+    state.chosen_skin = {skin = user_opts.skin, layout = user_opts.layout}
+    request_init_resize()
+end
+
+menus.init(menu, {
+    skin_current = function ()
+        return user_opts.layout, user_opts.skin, (user_opts.layout == "skin") and get_skin().name or nil
+    end,
+    skin_choose = choose_skin,
+    -- new skin = copy of the current one under a new name
+    skin_copy = function (display_name)
+        local file = skins.new_file_name()
+        local skin = skins.copy(get_skin())
+        skin.name = display_name
+        local ok, err = skins.save(file, skin)
+        if ok then choose_skin(file, "skin") end
+        return ok, err
+    end,
+    skin_rename = function (display_name)
+        local skin = get_skin()
+        skin.name = display_name
+        return skins.save(user_opts.skin, skin)
+    end,
+    skin_archive = function ()
+        if user_opts.skin == skins.DEFAULT_NAME then return false end
+        local ok, err = skins.archive(user_opts.skin)
+        if ok then choose_skin(skins.DEFAULT_NAME, "skin") end
+        return ok, err
+    end,
+    skin_list = skins.list,
+})
+
+-- skin editor: works on the skin that layout=skin draws
+local editor_restore = {}
+editor.init({
+    get_skin = get_skin,
+    set_skin = function (skin) current_skin = skin end,
+    default_skin = function () return skins.copy(skins.DEFAULT) end,
+    copy = skins.copy,
+    save = function (skin) return skins.save(user_opts.skin, skin) end,
+    resolve = function (skin)
+        return (resolve_skin(skin, osc_param.playresx, osc_param.playresy, true))
+    end,
+    relayout = request_init_resize,
+    dims = function () return osc_param.playresx, osc_param.playresy end,
+    scale = get_virt_scale_factor,
+    accent = function () return user_opts.seekbarfg_color end,
+    font = function () return user_opts.font end,
+    menu = menu,
+    element_type = function (id) return element_names[id] end,
+    set_editing = function (on)
+        if on then
+            menu.close()
+            editor_restore = {visibility = user_opts.visibility, layout = user_opts.layout}
+            user_opts.layout = "skin"
+            state.skin_editing = true
+            visibility_mode("always", true)
+            -- the bar stays visible but its own mouse handling is off: the editor owns the mouse
+            state.active_element = nil
+            for _, section in ipairs({"showhide", "showhide_wc", "showhide_vol", "input", "input_wheel", "input_mid",
+                                      "window-controls", "window-controls-title", "window-controls-ontop"}) do
+                mp.disable_key_bindings(section)
+            end
+            state.showhide_enabled = false
+            state.input_enabled = false
+            state.windowcontrols_buttons = false
+            state.windowcontrols_title = false
+            state.windowcontrols_ontop = false
+        else
+            state.skin_editing = false
+            user_opts.layout = editor_restore.layout or user_opts.layout
+            mp.enable_key_bindings("input_wheel")
+            mp.enable_key_bindings("input_mid")
+            visibility_mode(editor_restore.visibility or "auto", true)
+        end
+        request_init_resize()
+    end,
+})
 
 --
 -- Hybrid: single click on the video toggles pause.
@@ -4875,14 +5210,23 @@ local function load_saved_state()
     if user_opts.remember_speed and tonumber(data.speed) then
         mp.set_property_number("speed", tonumber(data.speed))
     end
+    -- skin picked in the menu wins over hybrid.conf
+    if type(data.skin) == "string" and (data.layout == "skin" or data.layout == "default") then
+        if data.layout == "default" or data.skin == skins.DEFAULT_NAME or utils.file_info(skins.path(data.skin)) then
+            user_opts.layout, user_opts.skin = data.layout, data.skin
+            state.chosen_skin = {skin = data.skin, layout = data.layout}
+        end
+    end
 end
 
 mp.register_event("shutdown", function ()
-    if not (user_opts.remember_volume or user_opts.remember_speed) then return end
-    local data = {
-        volume = mp.get_property_number("volume"),
-        speed = mp.get_property_number("speed"),
-    }
+    local data = {}
+    if user_opts.remember_volume then data.volume = mp.get_property_number("volume") end
+    if user_opts.remember_speed then data.speed = mp.get_property_number("speed") end
+    if state.chosen_skin then
+        data.skin, data.layout = state.chosen_skin.skin, state.chosen_skin.layout
+    end
+    if not next(data) then return end
     local file = io.open(saved_state_path, "w")
     if file then
         file:write(utils.format_json(data))
@@ -4956,7 +5300,7 @@ local function validate_user_opts()
     validate_string_opt("deadzone_hide", {"instant", "timeout"}, "instant")
     validate_string_opt("volume_widget", {"right", "left", "no"}, "right")
     validate_string_opt("pause_indicator", {"flash", "static", "no"}, "flash")
-    validate_string_opt("layout", {"default"}, "default")
+    validate_string_opt("layout", {"default", "skin"}, "default")
 
     local hbc = user_opts.seek_handle_border_color
     if hbc == "disable" then
@@ -5010,6 +5354,7 @@ opt.read_options(user_opts, "hybrid", function(changed)
     if changed.language then load_locale_file() end
     validate_user_opts()
     if changed.language then set_osc_locale() end
+    if changed.skin then current_skin = nil end
     menu.setup({accent = user_opts.seekbarfg_color, font = user_opts.font})
     set_icon_theme()
     set_osc_styles()

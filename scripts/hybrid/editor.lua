@@ -1,0 +1,957 @@
+-- Skin editor for the hybrid OSC: move and resize the elements of the bottom bar with the mouse.
+-- Opened with "script-binding hybrid/editor" (Ctrl+E) or from the main menu.
+-- Works on the skin table that layout=skin draws, so every change is visible at once.
+
+local M = {}
+local api                  -- functions from main.lua, see M.init()
+
+local overlay = mp.create_osd_overlay("ass-events")
+overlay.z = 2000
+local ed = nil             -- editing state while the editor is open
+
+local NAMES = {
+    title = "Название", chapter_title = "Глава", seekbar = "Полоса перемотки",
+    menu = "Кнопка меню", sub_track = "Субтитры", audio_track = "Аудиодорожки",
+    time_codes = "Время", playlist_prev = "Предыдущее видео", playlist_next = "Следующее видео",
+    jump_backward = "Назад", jump_forward = "Вперёд", play_pause = "Пауза",
+    chapter_prev = "Предыдущая глава", chapter_next = "Следующая глава",
+    speed_ruler = "Линейка скорости", speed = "Кнопка скорости", shuffle = "Перемешать",
+    file_loop = "Повтор", playlist = "Плейлист", pip = "Картинка в картинке",
+    fullscreen = "Полный экран", info = "Статистика", ontop = "Поверх окон",
+    screenshot = "Скриншот", cache_info = "Кэш", download = "Скачать",
+}
+M.NAMES = NAMES
+
+-- objects: icons, ready buttons, built-in elements --------------------------------------------------------------------------
+
+-- icons for own buttons: Material Icons name, Russian name
+local ICONS = {
+    {"play_arrow", "Воспроизведение"}, {"pause", "Пауза"}, {"skip_previous", "Назад к началу"},
+    {"skip_next", "Дальше"}, {"fast_rewind", "Перемотка назад"}, {"fast_forward", "Перемотка вперёд"},
+    {"replay_10", "Назад 10"}, {"forward_10", "Вперёд 10"}, {"replay_30", "Назад 30"}, {"forward_30", "Вперёд 30"},
+    {"volume_up", "Громче"}, {"volume_down", "Тише"}, {"volume_off", "Без звука"},
+    {"photo_camera", "Фотоаппарат"}, {"fullscreen", "Развернуть"}, {"fullscreen_exit", "Свернуть"},
+    {"picture_in_picture_alt", "Картинка в картинке"}, {"subtitles", "Субтитры"}, {"audiotrack", "Нота"},
+    {"playlist_play", "Плейлист"}, {"queue_music", "Очередь"}, {"repeat", "Повтор"}, {"repeat_one", "Повтор одного"},
+    {"shuffle", "Перемешать"}, {"speed", "Спидометр"}, {"slow_motion_video", "Замедление"},
+    {"high_quality", "HQ"}, {"settings", "Шестерёнка"}, {"tune", "Ползунки"}, {"menu", "Три полоски"},
+    {"info", "Информация"}, {"help_outline", "Вопрос"}, {"bookmark", "Закладка"}, {"star", "Звезда"},
+    {"favorite", "Сердце"}, {"folder_open", "Папка"}, {"history", "История"}, {"schedule", "Часы"},
+    {"push_pin", "Булавка"}, {"aspect_ratio", "Пропорции"}, {"brightness_6", "Яркость"},
+    {"live_tv", "Телевизор"}, {"download", "Скачать"}, {"close", "Крестик"},
+}
+
+local function icon_name(icon)
+    for _, i in ipairs(ICONS) do
+        if i[1] == icon then return i[2] end
+    end
+    return icon
+end
+
+-- ready-made buttons: title, icon, left click, tooltip
+local PRESETS = {
+    {"Скриншот", "photo_camera", "osd-msg screenshot"},
+    {"Громче", "volume_up", "no-osd add volume 5"},
+    {"Тише", "volume_down", "no-osd add volume -5"},
+    {"Звук вкл/выкл", "volume_off", "cycle mute"},
+    {"Скорость 1.5× / 1×", "speed", "cycle-values speed 1.5 1"},
+    {"Назад на 30 с", "replay_30", "seek -30"},
+    {"Вперёд на 30 с", "forward_30", "seek 30"},
+    {"Предыдущая глава", "skip_previous", "add chapter -1"},
+    {"Следующая глава", "skip_next", "add chapter 1"},
+    {"Повтор файла", "repeat_one", "cycle-values loop-file inf no"},
+    {"Поверх всех окон", "push_pin", "cycle ontop"},
+    {"Качество стрима", "high_quality", "script-binding hybrid/quality"},
+    {"Аудиодорожки", "audiotrack", "script-binding hybrid/audio"},
+    {"Соотношение сторон", "aspect_ratio", "script-binding hybrid/aspect"},
+    {"Открыть файл", "folder_open", "script-binding hybrid/open-file"},
+    {"Недавние файлы", "history", "script-binding hybrid/history"},
+    {"Статистика", "info", "script-binding stats/display-stats-toggle"},
+    {"Закрыть плеер", "close", "quit"},
+}
+
+-- built-in elements that can be put on the bar
+local BUILTIN = {
+    "play_pause", "jump_backward", "jump_forward", "playlist_prev", "playlist_next",
+    "chapter_prev", "chapter_next", "menu", "sub_track", "audio_track", "time_codes",
+    "title", "chapter_title", "seekbar", "speed_ruler", "speed", "shuffle", "file_loop",
+    "playlist", "pip", "fullscreen", "info", "ontop", "screenshot", "cache_info",
+}
+
+local function item_name(item)
+    if item.custom then
+        if item.custom.kind == "text" then return "Надпись «" .. (item.custom.text or "") .. "»" end
+        return item.tooltip or ("Кнопка «" .. icon_name(item.custom.icon) .. "»")
+    end
+    return NAMES[item.id] or item.id
+end
+M.item_name = item_name
+
+
+local T = {
+    save = "Сохранить", undo = "Шаг назад", create = "Создать объект", reset = "Как по умолчанию", exit = "Выйти",
+    hint = "Тащи мышкой, за уголок — размер · правый клик — свойства · стрелки — точно · Delete — убрать",
+    height = "высота фона",
+    saved = "Скин сохранён",
+    save_failed = "Не удалось сохранить: %s",
+    unsaved = "Есть несохранённые изменения: «Сохранить» или ещё раз «Выйти» — выйти без сохранения",
+    removed = "Убрано: %s (вернуть — «Шаг назад»)",
+    reset_done = "Вернул стандартную раскладку (не сохранено)",
+    hidden = "не всегда виден",
+}
+
+local HANDLE = 8       -- corner handle size
+local MIN_SIZE = 6
+
+-- helpers -------------------------------------------------------------------------------
+
+local function bgr(color)
+    color = color:gsub("^#", "")
+    return color:sub(5, 6) .. color:sub(3, 4) .. color:sub(1, 2)
+end
+
+local function esc(text)
+    local ok, escaped = pcall(mp.command_native, {"escape-ass", tostring(text)})
+    return ok and escaped or tostring(text)
+end
+
+local function round(v) return math.floor(v * 2 + 0.5) / 2 end
+
+local function mouse()
+    local x, y = mp.get_mouse_pos()
+    local sx, sy = api.scale()
+    return x * sx, y * sy
+end
+
+local function inside(x, y, x1, y1, x2, y2)
+    return x >= x1 and x <= x2 and y >= y1 and y <= y2
+end
+
+local function push_undo()
+    ed.undo[#ed.undo + 1] = api.copy(ed.skin)
+    if #ed.undo > 100 then table.remove(ed.undo, 1) end
+    ed.dirty = true
+    ed.confirm_exit = false
+end
+
+local function toast(text, seconds)
+    ed.toast = text
+    if ed.toast_timer then ed.toast_timer:kill() end
+    ed.toast_timer = mp.add_timeout(seconds or 2.5, function ()
+        if ed then ed.toast = nil M.render() end
+    end)
+end
+
+local function relayout()
+    api.set_skin(ed.skin)
+    api.relayout()
+end
+
+-- current boxes of all items (window coordinates, virtual px)
+local function entries()
+    return api.resolve(ed.skin)
+end
+
+-- drawing -------------------------------------------------------------------------------
+
+local function rect_path(x1, y1, x2, y2)
+    return string.format("m %.1f %.1f l %.1f %.1f l %.1f %.1f l %.1f %.1f", x1, y1, x2, y1, x2, y2, x1, y2)
+end
+
+local function frame(ass, x1, y1, x2, y2, color, alpha, width)
+    ass[#ass + 1] = string.format("{\\an7\\pos(0,0)\\bord%.1f\\shad0\\blur0\\1a&HFF&\\3c&H%s&\\3a&H%02X&\\p1}%s{\\p0}",
+        width or 1, bgr(color), alpha or 0, rect_path(x1, y1, x2, y2))
+end
+
+local function fill(ass, x1, y1, x2, y2, color, alpha)
+    ass[#ass + 1] = string.format("{\\an7\\pos(0,0)\\bord0\\shad0\\blur0\\1c&H%s&\\1a&H%02X&\\p1}%s{\\p0}",
+        bgr(color), alpha or 0, rect_path(x1, y1, x2, y2))
+end
+
+local function text(ass, x, y, an, str, size, color)
+    ass[#ass + 1] = string.format("{\\an%d\\pos(%.1f,%.1f)\\fn%s\\fs%d\\bord2\\shad0\\blur0\\3c&H000000&\\1c&H%s&}%s",
+        an, x, y, api.font(), size or 14, bgr(color or "#FFFFFF"), esc(str))
+end
+
+-- handles of the selected box: {name, x1, y1, x2, y2}
+local function handles(e)
+    local h = HANDLE
+    return {
+        {"tl", e.x1 - h / 2, e.y1 - h / 2, e.x1 + h / 2, e.y1 + h / 2},
+        {"tr", e.x2 - h / 2, e.y1 - h / 2, e.x2 + h / 2, e.y1 + h / 2},
+        {"bl", e.x1 - h / 2, e.y2 - h / 2, e.x1 + h / 2, e.y2 + h / 2},
+        {"br", e.x2 - h / 2, e.y2 - h / 2, e.x2 + h / 2, e.y2 + h / 2},
+    }
+end
+
+local function height_handle(W, H)
+    local y = H - ed.skin.height
+    return W - 140, y - 9, W - 20, y + 9, y
+end
+
+function M.render()
+    if not ed then return end
+    local W, H = api.dims()
+    overlay.res_x, overlay.res_y = W, H
+    local accent = api.accent()
+    local ass = {}
+    local list = entries()
+    ed.list = list
+
+    -- bar background height
+    local hx1, hy1, hx2, hy2, bar_y = height_handle(W, H)
+    fill(ass, 0, bar_y - 0.5, W, bar_y + 0.5, "#FFFFFF", 0x90)
+    fill(ass, hx1, hy1, hx2, hy2, ed.hover == "height" and accent or "#202020", 0x30)
+    text(ass, (hx1 + hx2) / 2, (hy1 + hy2) / 2, 5, "↕ " .. T.height, 12)
+
+    -- item frames (only the selected one while its property menu is open)
+    for i, e in ipairs(list) do
+        if i ~= ed.selected and not ed.menu_open then
+            local color, alpha = "#FFFFFF", ed.hover == i and 0x00 or 0x70
+            if not e.exists or not e.shown then color, alpha = "#9A9A9A", 0x80 end
+            frame(ass, e.x1, e.y1, e.x2, e.y2, color, alpha, ed.hover == i and 1.5 or 1)
+        end
+    end
+
+    -- selected item: accent frame, corner handles, name and numbers
+    local sel = ed.selected and list[ed.selected]
+    if sel then
+        frame(ass, sel.x1, sel.y1, sel.x2, sel.y2, accent, 0, 2)
+        for _, h in ipairs(handles(sel)) do
+            fill(ass, h[2], h[3], h[4], h[5], accent, 0)
+        end
+        local item = sel.item
+        local label = item_name(item) .. string.format("  %d×%d", sel.x2 - sel.x1, sel.y2 - sel.y1)
+        if not sel.shown then label = label .. " · " .. T.hidden end
+        local ly = sel.y1 - 6
+        if ly < 70 then ly = sel.y2 + 22 end
+        text(ass, math.max(10, math.min(sel.x1, W - 300)), ly, 1, label, 14, accent)
+    end
+
+    -- toolbar
+    local buttons = {
+        {"save", T.save, ed.dirty}, {"undo", T.undo, #ed.undo > 0}, {"create", T.create, true},
+        {"reset", T.reset, true}, {"exit", T.exit, true},
+    }
+    local gap, bh = 8, 30
+    local bw = math.min(150, math.floor((W - 40 - (#buttons - 1) * gap) / #buttons))
+    local total = #buttons * bw + (#buttons - 1) * gap
+    local x = (W - total) / 2
+    ed.buttons = {}
+    fill(ass, x - 10, 6, x + total + 10, 6 + bh + 34, "#000000", 0x50)
+    for _, b in ipairs(buttons) do
+        local x1, y1, x2, y2 = x, 12, x + bw, 12 + bh
+        local hovered = ed.hover == b[1]
+        local color = (b[1] == "save" and b[3]) and accent or "#303030"
+        fill(ass, x1, y1, x2, y2, hovered and "#505050" or color, b[3] and 0x10 or 0x80)
+        text(ass, (x1 + x2) / 2, (y1 + y2) / 2, 5, b[2], 14, b[3] and "#FFFFFF" or "#9A9A9A")
+        ed.buttons[#ed.buttons + 1] = {id = b[1], x1 = x1, y1 = y1, x2 = x2, y2 = y2, enabled = b[3]}
+        x = x2 + gap
+    end
+    text(ass, W / 2, 12 + bh + 15, 5, ed.toast or T.hint, 12, ed.toast and accent or "#DDDDDD")
+
+    overlay.data = table.concat(ass, "\n")
+    overlay:update()
+end
+
+-- hit testing ---------------------------------------------------------------------------
+
+local function hit(x, y)
+    for _, b in ipairs(ed.buttons or {}) do
+        if inside(x, y, b.x1, b.y1, b.x2, b.y2) then return "button", b end
+    end
+    local list = ed.list or entries()
+    local sel = ed.selected and list[ed.selected]
+    if sel then
+        for _, h in ipairs(handles(sel)) do
+            if inside(x, y, h[2] - 2, h[3] - 2, h[4] + 2, h[5] + 2) then return "handle", h[1] end
+        end
+    end
+    local W, H = api.dims()
+    local hx1, hy1, hx2, hy2 = height_handle(W, H)
+    if inside(x, y, hx1, hy1, hx2, hy2) then return "height" end
+    -- the smallest box under the mouse wins (buttons over the long title)
+    local best, best_area
+    for i, e in ipairs(list) do
+        if inside(x, y, e.x1 - 2, e.y1 - 2, e.x2 + 2, e.y2 + 2) then
+            local area = (e.x2 - e.x1) * (e.y2 - e.y1)
+            if not best or area < best_area then best, best_area = i, area end
+        end
+    end
+    if best then return "item", best end
+    return nil
+end
+
+-- editing actions -----------------------------------------------------------------------
+
+-- after a move: count x from the third of the window the item is in, so it keeps its place
+-- when the window gets wider or narrower
+local function reanchor(index)
+    local item = ed.skin.items[index]
+    if item.anchor == "stretch" then return end
+    local e = entries()[index]
+    local W = api.dims()
+    local cx = (e.x1 + e.x2) / 2
+    local anchor = cx < W / 3 and "left" or (cx > W * 2 / 3 and "right" or "center")
+    local ax = anchor == "center" and W / 2 or (anchor == "right" and W or 0)
+    item.anchor = anchor
+    item.x = round(e.x1 - ax)
+end
+
+local function apply_drag(x, y)
+    local d = ed.drag
+    local dx, dy = x - d.mx, y - d.my
+    if d.mode == "height" then
+        ed.skin.height = math.max(0, round(d.start.height - dy))
+        relayout()
+        return
+    end
+    local item = ed.skin.items[d.index]
+    local s = d.start
+    if d.mode == "move" then
+        item.x = round(s.x + dx)
+        if item.anchor == "stretch" then item.r = round(s.r - dx) end
+        item.bottom = round(s.bottom - dy)
+    else
+        local corner = d.mode
+        if corner:find("r") then
+            if item.anchor == "stretch" then item.r = round(s.r - dx)
+            else item.w = math.max(MIN_SIZE, round(s.w + dx)) end
+        else
+            local ddx = dx
+            if item.anchor ~= "stretch" then ddx = math.min(dx, s.w - MIN_SIZE) end
+            item.x = round(s.x + ddx)
+            if item.anchor ~= "stretch" then item.w = round(s.w - ddx) end
+        end
+        if corner:find("t") then
+            item.h = math.max(MIN_SIZE, round(s.h - dy))
+        else
+            local ddy = math.max(dy, -(s.h - MIN_SIZE))
+            item.bottom = round(s.bottom - ddy)
+            item.h = round(s.h + ddy)
+        end
+    end
+    relayout()
+end
+
+local function nudge(dx, dy)
+    local item = ed.selected and ed.skin.items[ed.selected]
+    if not item then return end
+    push_undo()
+    item.x = item.x + dx
+    if item.anchor == "stretch" then item.r = item.r - dx end
+    item.bottom = item.bottom - dy
+    relayout()
+    M.render()
+end
+
+local function remove_selected()
+    local item = ed.selected and ed.skin.items[ed.selected]
+    if not item then return end
+    push_undo()
+    table.remove(ed.skin.items, ed.selected)
+    ed.selected = nil
+    toast(string.format(T.removed, item_name(item)))
+    relayout()
+    M.render()
+end
+
+local function undo()
+    if #ed.undo == 0 then return end
+    ed.skin = table.remove(ed.undo)
+    ed.dirty = true
+    if ed.selected and not ed.skin.items[ed.selected] then ed.selected = nil end
+    relayout()
+    M.render()
+end
+
+local function save()
+    local ok, err = api.save(ed.skin)
+    if ok then
+        ed.snapshot = api.copy(ed.skin)
+        ed.dirty = false
+        toast(T.saved)
+    else
+        toast(string.format(T.save_failed, tostring(err)), 5)
+    end
+    M.render()
+end
+
+local close
+
+local function press_button(id)
+    if id == "save" then
+        if ed.dirty then save() end
+    elseif id == "undo" then
+        undo()
+    elseif id == "create" then
+        M.open_create()
+    elseif id == "reset" then
+        push_undo()
+        ed.skin = api.default_skin()
+        ed.selected = nil
+        relayout()
+        toast(T.reset_done)
+        M.render()
+    elseif id == "exit" then
+        if ed.dirty and not ed.confirm_exit then
+            ed.confirm_exit = true
+            toast(T.unsaved, 6)
+            M.render()
+        else
+            close()
+        end
+    end
+end
+
+-- properties menu -------------------------------------------------------------------------
+
+-- what a button can do; command nil = what the element does by itself
+local ACTIONS = {
+    {"Как обычно", nil},
+    {"Ничего", "ignore"},
+    {"Пауза / воспроизведение", "cycle pause"},
+    {"Полный экран", "cycle fullscreen"},
+    {"Назад на 5 с", "seek -5"}, {"Вперёд на 5 с", "seek 5"},
+    {"Назад на 10 с", "seek -10"}, {"Вперёд на 10 с", "seek 10"},
+    {"Назад на 30 с", "seek -30"}, {"Вперёд на 30 с", "seek 30"},
+    {"Назад на 1 мин", "seek -60"}, {"Вперёд на 1 мин", "seek 60"},
+    {"В начало видео", "seek 0 absolute"},
+    {"Предыдущее видео", "playlist-prev"}, {"Следующее видео", "playlist-next"},
+    {"Предыдущая глава", "add chapter -1"}, {"Следующая глава", "add chapter 1"},
+    {"Громче", "no-osd add volume 5"}, {"Тише", "no-osd add volume -5"},
+    {"Выключить / включить звук", "cycle mute"},
+    {"Скорость 1×", "set speed 1"}, {"Скорость 1.25×", "set speed 1.25"},
+    {"Скорость 1.5×", "set speed 1.5"}, {"Скорость 2×", "set speed 2"},
+    {"Быстрее на 0.1", "add speed 0.1"}, {"Медленнее на 0.1", "add speed -0.1"},
+    {"Скриншот", "osd-msg screenshot"}, {"Скриншот без субтитров", "osd-msg screenshot video"},
+    {"Следующие субтитры", "cycle sub"}, {"Следующая аудиодорожка", "cycle audio"},
+    {"Главное меню", "script-binding hybrid/menu"},
+    {"Меню субтитров", "script-binding hybrid/subtitles"},
+    {"Меню аудиодорожек", "script-binding hybrid/audio"},
+    {"Плейлист", "script-binding hybrid/playlist"},
+    {"Главы", "script-binding hybrid/chapters"},
+    {"Качество стрима", "script-binding hybrid/quality"},
+    {"Недавние файлы", "script-binding hybrid/history"},
+    {"Открыть файл", "script-binding hybrid/open-file"},
+    {"Картинка в картинке", "script-binding hybrid/pip"},
+    {"Повтор файла вкл/выкл", "cycle-values loop-file inf no"},
+    {"Поверх всех окон вкл/выкл", "cycle ontop"},
+    {"Статистика", "script-binding stats/display-stats-toggle"},
+    {"Свернуть окно", "cycle window-minimized"},
+    {"Закрыть плеер", "quit"},
+}
+
+local BUTTONS = {
+    {"left", "Левая кнопка мыши"}, {"right", "Правая кнопка мыши"},
+    {"wheel_up", "Колесо вверх"}, {"wheel_down", "Колесо вниз"},
+}
+
+local COLORS = {
+    {"Белый", "#FFFFFF"}, {"Светло-серый", "#C8C8C8"}, {"Серый", "#808080"}, {"Чёрный", "#000000"},
+    {"Красный", "#F44336"}, {"Оранжевый", "#FF8232"}, {"Жёлтый", "#FFD54F"}, {"Зелёный", "#66BB6A"},
+    {"Бирюзовый", "#26C6DA"}, {"Голубой", "#4FC3F7"}, {"Синий", "#3F7BFF"}, {"Фиолетовый", "#AB47BC"},
+    {"Розовый", "#F06292"},
+}
+
+local ALPHAS = {{"Непрозрачный", nil}, {"Чуть прозрачный (25%)", 64}, {"Полупрозрачный (50%)", 128},
+                {"Почти невидимый (75%)", 192}}
+
+local PRIORITIES = {
+    {"Никогда не прятать", nil}, {"Прятать последним", 9}, {"Прятать позже других", 6},
+    {"Прятать раньше других", 3}, {"Прятать первым", 1},
+}
+
+local function action_name(command)
+    if not command then return ACTIONS[1][1] end
+    for _, a in ipairs(ACTIONS) do
+        if a[2] == command then return a[1] end
+    end
+    return command
+end
+
+local function find_name(list, value, default)
+    for _, entry in ipairs(list) do
+        if entry[2] == value then return entry[1] end
+    end
+    return default or tostring(value)
+end
+
+-- text input through the mpv console (mp.input, mpv 0.38+)
+local function ask_text(prompt, default, done)
+    local ok, input = pcall(require, "mp.input")
+    if not ok then
+        toast("Ввод текста недоступен в этой версии mpv", 4)
+        return
+    end
+    input.get({
+        prompt = prompt .. " ",
+        default_text = default or "",
+        submit = function (text)
+            input.terminate()
+            done(text)
+        end,
+    })
+end
+
+local function change(index, fn)
+    local item = ed.skin.items[index]
+    if not item then return end
+    push_undo()
+    fn(item)
+    relayout()
+end
+
+local function choice_list(title, list, current, index, apply)
+    return function ()
+        local items = {}
+        for _, entry in ipairs(list) do
+            items[#items + 1] = {
+                title = entry[1], active = entry[2] == current(),
+                action = function ()
+                    change(index, function (item) apply(item, entry[2]) end)
+                    return "keep"
+                end,
+            }
+        end
+        return {title = title, items = items}
+    end
+end
+
+local function actions_for(index, button, label)
+    return function ()
+        local item = ed.skin.items[index]
+        local current = item and item.actions and item.actions[button]
+        local items = {}
+        local known = current == nil
+        for _, a in ipairs(ACTIONS) do
+            if a[2] == current then known = true end
+            items[#items + 1] = {
+                title = a[1], active = a[2] == current,
+                action = function ()
+                    change(index, function (it)
+                        it.actions = it.actions or {}
+                        it.actions[button] = a[2]
+                        if not next(it.actions) then it.actions = nil end
+                    end)
+                    return "keep"
+                end,
+            }
+        end
+        items[#items].separator = true
+        items[#items + 1] = {
+            title = "Своя команда mpv…", hint = (not known) and current or nil, active = not known,
+            action = function ()
+                ask_text("Команда mpv (например: seek 15):", current, function (text)
+                    if text == "" then return end
+                    change(index, function (it)
+                        it.actions = it.actions or {}
+                        it.actions[button] = text
+                    end)
+                    M.render()
+                end)
+            end,
+        }
+        return {title = label, items = items}
+    end
+end
+
+local function actions_menu(index)
+    return function ()
+        local item = ed.skin.items[index]
+        local items = {}
+        for _, b in ipairs(BUTTONS) do
+            local command = item and item.actions and item.actions[b[1]]
+            items[#items + 1] = {title = b[2], hint = action_name(command), submenu = actions_for(index, b[1], b[2])}
+        end
+        return {title = "Что делает", items = items}
+    end
+end
+
+local function properties(index)
+    return function ()
+        local item = ed.skin.items[index]
+        if not item then return {title = "—", items = {}} end
+        local is_button = api.element_type(item.id) == "button"
+        local W = api.dims()
+        local items = {}
+        local function add(entry) items[#items + 1] = entry end
+
+        if is_button then
+            local count = 0
+            for _ in pairs(item.actions or {}) do count = count + 1 end
+            add({title = "Что делает", icon = "touch_app", hint = count > 0 and ("изменено: " .. count) or "как обычно",
+                 submenu = actions_menu(index)})
+        end
+        if item.id ~= "speed_ruler" then
+            local sizes = {{"Как в теме", nil}}
+            for _, s in ipairs({12, 14, 16, 18, 20, 22, 24, 28, 32, 36, 40, 48}) do sizes[#sizes + 1] = {s .. " px", s} end
+            add({title = is_button and "Размер иконки" or "Размер текста", icon = "format_size",
+                 hint = item.size and (item.size .. " px") or "как в теме",
+                 submenu = choice_list("Размер", sizes, function () return ed.skin.items[index].size end, index,
+                     function (it, v) it.size = v end)})
+            local colors = {{"Как в теме", nil}}
+            for _, c in ipairs(COLORS) do colors[#colors + 1] = c end
+            add({title = "Цвет", icon = "palette", hint = find_name(colors, item.color, item.color),
+                 submenu = choice_list("Цвет", colors, function () return ed.skin.items[index].color end, index,
+                     function (it, v) it.color = v end)})
+        end
+        add({title = "Прозрачность", icon = "opacity", hint = find_name(ALPHAS, item.alpha),
+             submenu = choice_list("Прозрачность", ALPHAS, function () return ed.skin.items[index].alpha end, index,
+                 function (it, v) it.alpha = v end)})
+        add({title = "Когда мало места", icon = "unfold_less", hint = find_name(PRIORITIES, item.priority),
+             submenu = choice_list("Когда окно узкое", PRIORITIES, function () return ed.skin.items[index].priority end,
+                 index, function (it, v) it.priority = v end)})
+        if is_button then
+            add({title = "Подсказка при наведении", icon = "chat_bubble_outline",
+                 hint = item.tooltip or "как обычно", action = function ()
+                ask_text("Текст подсказки (пусто — как обычно):", item.tooltip, function (text)
+                    change(index, function (it) it.tooltip = text ~= "" and text or nil end)
+                    M.render()
+                end)
+            end})
+        end
+        local e = entries()[index]
+        if item.anchor == "stretch" then
+            add({title = "Не растягивать", icon = "close_fullscreen", action = function ()
+                change(index, function (it)
+                    it.anchor, it.w, it.r = "left", round(e.x2 - e.x1), nil
+                end)
+                reanchor(index)
+                relayout()
+                return "keep"
+            end})
+        else
+            add({title = "Растянуть на всю ширину", icon = "open_in_full", action = function ()
+                change(index, function (it)
+                    it.anchor, it.x, it.r, it.w = "stretch", round(e.x1), round(W - e.x2), nil
+                end)
+                return "keep"
+            end})
+            add({title = "Поставить по центру окна", icon = "align_horizontal_center", action = function ()
+                change(index, function (it) it.anchor, it.x = "center", round(-(it.w or 0) / 2) end)
+                return "keep"
+            end})
+        end
+        if item.custom and item.custom.kind == "button" then
+            add({title = "Сменить иконку", icon = item.custom.icon, hint = icon_name(item.custom.icon), submenu = function ()
+                local list = {}
+                for _, i in ipairs(ICONS) do
+                    list[#list + 1] = {title = i[2], icon = i[1], active = i[1] == ed.skin.items[index].custom.icon,
+                        action = function ()
+                            change(index, function (it) it.custom = {kind = "button", icon = i[1]} end)
+                            return "keep"
+                        end}
+                end
+                return {title = "Иконка", items = list}
+            end})
+        elseif item.custom and item.custom.kind == "text" then
+            add({title = "Изменить текст", icon = "text_fields", hint = item.custom.text, action = function ()
+                ask_text("Текст надписи:", item.custom.text, function (text)
+                    if text == "" then return end
+                    change(index, function (it) it.custom = {kind = "text", text = text} end)
+                    M.render()
+                end)
+            end})
+        end
+        add({title = "Удалить", icon = "delete", action = function ()
+            ed.selected = index
+            remove_selected()
+        end})
+        return {title = item_name(item), items = items}
+    end
+end
+
+-- create objects --------------------------------------------------------------------------
+
+local function new_custom_id()
+    local used = {}
+    for _, item in ipairs(ed.skin.items) do used[item.id] = true end
+    local n = 1
+    while used["custom_" .. n] do n = n + 1 end
+    return "custom_" .. n
+end
+
+-- new objects appear above the middle of the bar, then the user drags them
+local function add_item(item)
+    push_undo()
+    item.h = item.h or 24
+    if not item.anchor then
+        item.anchor = "center"
+        item.x = -math.floor((item.w or 24) / 2)
+        -- go up until the spot is free, so new objects do not pile on each other
+        local W, H = api.dims()
+        local x1, x2 = W / 2 + item.x, W / 2 + item.x + (item.w or 24)
+        local bottom = 70
+        for _ = 1, 12 do
+            local y2 = H - bottom
+            local y1 = y2 - item.h
+            local taken = false
+            for _, e in ipairs(entries()) do
+                if e.item.anchor ~= "stretch" and x1 < e.x2 + 4 and e.x1 < x2 + 4 and y1 < e.y2 + 4 and e.y1 < y2 + 4 then
+                    taken = true
+                    break
+                end
+            end
+            if not taken then break end
+            bottom = bottom + 30
+        end
+        item.bottom = bottom
+    end
+    ed.skin.items[#ed.skin.items + 1] = item
+    ed.selected = #ed.skin.items
+    relayout()
+    toast("Создано: " .. item_name(item) .. " — перетащи на место, правый клик — свойства", 5)
+end
+
+local function create_menu()
+    return function ()
+        local items = {}
+        items[#items + 1] = {title = "Готовая кнопка", icon = "smart_button", submenu = function ()
+            local list = {}
+            for _, p in ipairs(PRESETS) do
+                list[#list + 1] = {title = p[1], icon = p[2], action = function ()
+                    add_item({id = new_custom_id(), custom = {kind = "button", icon = p[2]},
+                        w = 24, h = 24, tooltip = p[1], actions = {left = p[3]}})
+                end}
+            end
+            return {title = "Готовая кнопка", items = list}
+        end}
+        items[#items + 1] = {title = "Своя кнопка (выбрать иконку)", icon = "add_box", submenu = function ()
+            local list = {}
+            for _, i in ipairs(ICONS) do
+                list[#list + 1] = {title = i[2], icon = i[1], action = function ()
+                    add_item({id = new_custom_id(), custom = {kind = "button", icon = i[1]}, w = 24, h = 24})
+                end}
+            end
+            return {title = "Иконка кнопки", items = list}
+        end}
+        items[#items + 1] = {title = "Надпись", icon = "text_fields", action = function ()
+            ask_text("Текст надписи:", "", function (text)
+                if text == "" then return end
+                add_item({id = new_custom_id(), custom = {kind = "text", text = text},
+                    w = math.max(24, math.floor(#text * 6)), h = 20})
+                M.render()
+            end)
+        end}
+        items[#items + 1] = {title = "Встроенный элемент", icon = "widgets", submenu = function ()
+            local present = {}
+            for _, item in ipairs(ed.skin.items) do present[item.id] = true end
+            local defaults = {}
+            for _, item in ipairs(api.default_skin().items) do defaults[item.id] = item end
+            local list = {}
+            for _, id in ipairs(BUILTIN) do
+                if not present[id] and api.element_type(id) then
+                    list[#list + 1] = {title = NAMES[id] or id, action = function ()
+                        local default = defaults[id]
+                        if default and default.anchor == "stretch" then
+                            add_item(api.copy(default)) -- spans the window at its standard height
+                        else
+                            local w = default and default.w or (id == "speed" and 42 or (id == "cache_info" and 70 or 24))
+                            add_item({id = id, w = w, h = default and default.h or 24})
+                        end
+                    end}
+                end
+            end
+            if #list == 0 then list[1] = {title = "Все встроенные элементы уже на панели", muted = true} end
+            return {title = "Встроенный элемент", items = list}
+        end}
+        return {title = "Создать объект", items = items}
+    end
+end
+
+local bind, unbind
+
+local function open_menu(id, builder)
+    ed.menu_open = true
+    unbind() -- the menu takes the mouse and the keyboard
+    M.render()
+    api.menu.open(id, builder)
+end
+
+local function open_properties(index)
+    ed.selected = index
+    open_menu("skin-properties", properties(index))
+end
+
+function M.open_create()
+    open_menu("skin-create", create_menu())
+end
+
+-- called by main.lua when the menu closes while the editor is open
+function M.menu_closed()
+    if not ed or not ed.menu_open then return end
+    ed.menu_open = false
+    bind()
+    M.render()
+end
+
+-- input ---------------------------------------------------------------------------------
+
+local function on_mouse_move()
+    local x, y = mouse()
+    if ed.drag then
+        apply_drag(x, y)
+        M.render()
+        return
+    end
+    local kind, value = hit(x, y)
+    local hover = nil
+    if kind == "button" then hover = value.id
+    elseif kind == "item" then hover = value
+    elseif kind == "height" then hover = "height" end
+    if hover ~= ed.hover then
+        ed.hover = hover
+        M.render()
+    end
+end
+
+local function on_left(info)
+    local x, y = mouse()
+    if info.event == "down" then
+        local kind, value = hit(x, y)
+        if kind == "button" then
+            ed.pressed_button = value
+            return
+        end
+        if kind == "handle" or kind == "item" or kind == "height" then
+            if kind == "item" then ed.selected = value end
+            local dirty_before, confirm_before = ed.dirty, ed.confirm_exit
+            push_undo()
+            local mode = kind == "handle" and value or (kind == "height" and "height" or "move")
+            local start = kind == "height" and {height = ed.skin.height} or api.copy(ed.skin.items[ed.selected])
+            ed.drag = {mode = mode, index = ed.selected, mx = x, my = y, start = start,
+                dirty_before = dirty_before, confirm_before = confirm_before}
+        else
+            ed.selected = nil
+        end
+        M.render()
+    elseif info.event == "up" then
+        if ed.pressed_button then
+            local b = ed.pressed_button
+            ed.pressed_button = nil
+            if inside(x, y, b.x1, b.y1, b.x2, b.y2) and b.enabled then press_button(b.id) end
+            return
+        end
+        local d = ed.drag
+        if d then
+            ed.drag = nil
+            if math.abs(x - d.mx) < 1 and math.abs(y - d.my) < 1 then
+                -- just a click: drop the undo step pushed on press
+                table.remove(ed.undo)
+                ed.dirty, ed.confirm_exit = d.dirty_before, d.confirm_before
+            elseif d.mode == "move" then
+                reanchor(d.index)
+                relayout()
+            end
+            M.render()
+        end
+    end
+end
+
+local bindings
+local MOUSE_SECTION = "hybrid_editor_mouse"
+
+local function on_right()
+    local kind, value = hit(mouse())
+    if kind == "item" then
+        open_properties(value)
+    elseif kind == "handle" and ed.selected then
+        open_properties(ed.selected)
+    end
+end
+
+bind = function ()
+    -- the mouse goes through a section whose mouse area is the whole window: such a section
+    -- forbids window dragging, otherwise holding the button and moving would move the mpv
+    -- window (and mpv would release the button in the middle of a drag)
+    local function noop() end
+    mp.set_key_bindings({
+        {"mouse_move", on_mouse_move},
+        {"mbtn_left", function () on_left({event = "up"}) end, function () on_left({event = "down"}) end},
+        {"mbtn_left_dbl", noop}, {"mbtn_right", on_right}, {"mbtn_right_dbl", noop}, {"mbtn_mid", noop},
+        {"wheel_up", noop}, {"wheel_down", noop}, {"wheel_left", noop}, {"wheel_right", noop},
+    }, MOUSE_SECTION, "force")
+    mp.set_mouse_area(0, 0, 100000, 100000, MOUSE_SECTION)
+    mp.enable_key_bindings(MOUSE_SECTION)
+
+    local list = {
+        {"left", function () nudge(-1, 0) end, {repeatable = true}},
+        {"right", function () nudge(1, 0) end, {repeatable = true}},
+        {"up", function () nudge(0, -1) end, {repeatable = true}},
+        {"down", function () nudge(0, 1) end, {repeatable = true}},
+        {"shift+left", function () nudge(-10, 0) end, {repeatable = true}},
+        {"shift+right", function () nudge(10, 0) end, {repeatable = true}},
+        {"shift+up", function () nudge(0, -10) end, {repeatable = true}},
+        {"shift+down", function () nudge(0, 10) end, {repeatable = true}},
+        {"tab", function ()
+            local n = #ed.skin.items
+            if n == 0 then return end
+            ed.selected = ((ed.selected or 0) % n) + 1
+            M.render()
+        end},
+        {"del", remove_selected},
+        {"ctrl+z", undo},
+        {"ctrl+s", function () if ed.dirty then save() end end},
+        {"esc", function ()
+            if ed.selected then ed.selected = nil M.render() else press_button("exit") end
+        end},
+        {"space", function () end}, {"q", function () end}, {"Q", function () end},
+    }
+    bindings = list
+    for i, b in ipairs(list) do
+        mp.add_forced_key_binding(b[1], "hybrid-editor-" .. i, b[2], b[3])
+    end
+end
+
+unbind = function ()
+    mp.disable_key_bindings(MOUSE_SECTION)
+    for i in ipairs(bindings or {}) do mp.remove_key_binding("hybrid-editor-" .. i) end
+    bindings = nil
+end
+
+-- open / close --------------------------------------------------------------------------
+
+function M.is_open() return ed ~= nil end
+
+function M.open()
+    if ed then return end
+    local skin = api.get_skin()
+    ed = {
+        skin = skin, snapshot = api.copy(skin), undo = {}, dirty = false,
+        was_paused = mp.get_property_native("pause"),
+    }
+    mp.set_property_native("pause", true)
+    api.set_editing(true)
+    bind()
+    -- the bar is laid out on the next tick; draw once it is there
+    mp.add_timeout(0.1, M.render)
+end
+
+close = function ()
+    if not ed then return end
+    if ed.dirty then api.set_skin(ed.snapshot) end -- leaving without saving
+    if ed.toast_timer then ed.toast_timer:kill() end
+    local was_paused = ed.was_paused
+    ed = nil
+    unbind()
+    overlay.data = ""
+    overlay:remove()
+    api.set_editing(false)
+    mp.set_property_native("pause", was_paused)
+end
+M.close = close
+
+function M.toggle()
+    if ed then press_button("exit") else M.open() end
+end
+
+function M.init(functions)
+    api = functions
+    mp.add_key_binding(nil, "editor", M.toggle)
+    mp.observe_property("osd-dimensions", "native", function ()
+        if ed then mp.add_timeout(0.05, M.render) end
+    end)
+end
+
+return M

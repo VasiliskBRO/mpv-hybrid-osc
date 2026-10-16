@@ -1,0 +1,23 @@
+{
+  "name": "Стандарт",
+  "height": 123,
+  "items": [
+    {"id": "title", "anchor": "stretch", "x": 25, "r": 25, "bottom": 99, "h": 24},
+    {"id": "chapter_title", "anchor": "stretch", "x": 26, "r": 34, "bottom": 78, "h": 16, "collapse": 19},
+    {"id": "seekbar", "anchor": "stretch", "x": 15, "r": 15, "bottom": 51, "h": 18},
+    {"id": "menu", "anchor": "left", "x": 25, "w": 24, "bottom": 18, "h": 24, "priority": 6},
+    {"id": "sub_track", "anchor": "left", "x": 70, "w": 24, "bottom": 18, "h": 24, "priority": 5},
+    {"id": "time_codes", "anchor": "left", "x": 115, "w": 90, "bottom": 22, "h": 16, "priority": 3},
+    {"id": "playlist_prev", "anchor": "center", "x": -135, "w": 30, "bottom": 18, "h": 24, "priority": 10},
+    {"id": "jump_backward", "anchor": "center", "x": -75, "w": 30, "bottom": 18, "h": 24, "priority": 10},
+    {"id": "play_pause", "anchor": "center", "x": -22.5, "w": 45, "bottom": 16, "h": 28, "priority": 10},
+    {"id": "jump_forward", "anchor": "center", "x": 45, "w": 30, "bottom": 18, "h": 24, "priority": 10},
+    {"id": "playlist_next", "anchor": "center", "x": 105, "w": 30, "bottom": 18, "h": 24, "priority": 10},
+    {"id": "speed_ruler", "anchor": "right", "x": -402, "w": 160, "bottom": 11, "h": 38, "priority": 1},
+    {"id": "shuffle", "anchor": "right", "x": -229, "w": 24, "bottom": 18, "h": 24, "priority": 2},
+    {"id": "file_loop", "anchor": "right", "x": -184, "w": 24, "bottom": 18, "h": 24, "priority": 4},
+    {"id": "playlist", "anchor": "right", "x": -139, "w": 24, "bottom": 18, "h": 24, "priority": 7},
+    {"id": "pip", "anchor": "right", "x": -94, "w": 24, "bottom": 18, "h": 24, "priority": 8},
+    {"id": "fullscreen", "anchor": "right", "x": -49, "w": 24, "bottom": 18, "h": 24, "priority": 9}
+  ]
+}
