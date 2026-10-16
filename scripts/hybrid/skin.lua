@@ -119,6 +119,9 @@ local function normalize(skin)
             item.zone = nil
             if type(item.show_in) ~= "string" or item.show_in == "" then item.show_in = nil end
             if type(item.color) ~= "string" or not item.color:match("^#%x%x%x%x%x%x$") then item.color = nil end
+            -- color under the mouse: "theme", "keep" (no change) or "#RRGGBB"; nil = auto
+            if not (item.hover == "theme" or item.hover == "keep"
+                    or type(item.hover) == "string" and item.hover:match("^#%x%x%x%x%x%x$")) then item.hover = nil end
             if type(item.tooltip) ~= "string" then item.tooltip = nil end
             local kind = type(item.custom) == "table" and item.custom.kind
             if kind == "button" or kind == "text" or kind == "zone" or kind == "plate" then
@@ -196,7 +199,7 @@ end
 
 -- JSON with a stable key order and one item per line, so the file stays readable
 local KEY_ORDER = {"id", "custom", "anchor", "x", "w", "r", "bottom", "h", "priority", "hide_below", "collapse",
-                   "size", "color", "alpha", "font", "bg", "bg_color", "bg_alpha", "radius", "pad", "show_in", "tooltip", "actions"}
+                   "size", "color", "hover", "alpha", "font", "bg", "bg_color", "bg_alpha", "radius", "pad", "show_in", "tooltip", "actions"}
 local LOOK_KEYS = {"theme", "seekbar_height", "background", "bg_inset", "bg_radius", "bg_color", "bg_alpha", "glow",
                    "handle_color", "handle_border_color"}
 M.LOOK_KEYS = LOOK_KEYS

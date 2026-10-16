@@ -2927,6 +2927,16 @@ local function apply_skin_item(id, lo, item)
     end
     if item.alpha then lo.alpha[1] = item.alpha end
     if element.type ~= "button" then return end
+    -- hover color (the "color" hover effect): item.hover = "theme" / "keep" (no change) / "#RRGGBB";
+    -- nil = auto: an item with its own color keeps it, the others take the theme color
+    local hover = item.hover or (item.color and "keep") or "theme"
+    if hover ~= "theme" and lo.button and lo.button.hoverstyle then
+        local style = (lo.button.hoverstyle:gsub("\\1?c&H%x+&", ""))
+        if hover ~= "keep" then
+            style = (style:gsub("^{", function () return "{\\1c&H" .. osc_color_convert(hover) .. "&" end, 1))
+        end
+        lo.button.hoverstyle = style
+    end
     if item.tooltip and item.tooltip ~= "" then element.tooltipF = item.tooltip end
     for button, command in pairs(item.actions or {}) do
         local events = SKIN_EVENTS[button]
@@ -3093,11 +3103,11 @@ layouts["skin"] = function ()
                 lo = place(id, 5, e)
                 lo.style = osc_styles[SKIN_STYLES[id] or "control_3"]
             end
-            apply_skin_item(id, lo, e.item)
             if wc_hover[id] then
                 lo.button.hoverstyle = "{\\c&H" .. osc_color_convert(wc_hover[id]) .. "&" .. wc_size .. "}"
                 if e.y1 < 50 then wc_left = math.min(wc_left, e.x1) end
             end
+            apply_skin_item(id, lo, e.item) -- after the window buttons' hover style: item.hover changes it
             if e.group ~= "bottom" then lo.group = e.group end
             if e.item.bg then add_skin_shape(id, e) end
             if id == "seekbar" and skin.glow then add_seekbar_glow(e) end

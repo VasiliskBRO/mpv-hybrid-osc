@@ -328,7 +328,8 @@ picker.recent = {}
 function picker.draw(ass, W, H)
     local p = ed.picker
     local accent = api.accent()
-    local pw, ph = 540, 340
+    -- taller when there are many buttons on the right ("Ввести код…", extras, "Готово", "Отмена")
+    local pw, ph = 540, math.max(340, 40 + 116 + (3 + #p.extras) * 34 + 12)
     local x0, y0 = math.floor((W - pw) / 2), math.floor((H - ph) / 2)
     local regions = {}
     local function region(kind, value, x1, y1, x2, y2)
@@ -518,8 +519,9 @@ function M.render()
     end
 
     -- toolbar: at the top or in the middle of the window ("⇅"); hidden while an object is dragged
+    -- and while a menu or the color picker is open (it must not cover them)
     ed.buttons = {}
-    if not ed.drag then
+    if not ed.drag and not ed.menu_open and not ed.picker then
         local buttons = {
             {"save", T.save, ed.dirty}, {"undo", T.undo, #ed.undo > 0}, {"create", T.create, true},
             {"look", T.look, true}, {"reset", T.reset, true}, {"exit", T.exit, true},
@@ -1156,6 +1158,15 @@ local function properties(index)
                 add({title = "Цвет", icon = "palette", hint = find_name(colors, item.color, item.color),
                      action = color_list("Цвет", colors, function () return ed.skin.items[index].color end, index,
                          function (it, v) it.color = v end)})
+                if is_button then
+                    -- color under the mouse (the theme color by default, an own color stays)
+                    local hovers = {{"Авто", nil}, {"Цвет темы", "theme"}, {"Не менять", "keep"}}
+                    local auto = item.color and "авто: не менять" or "авто: цвет темы"
+                    add({title = "Цвет при наведении", icon = "ads_click",
+                         hint = item.hover and find_name(hovers, item.hover, item.hover) or auto,
+                         action = color_list("Цвет при наведении", hovers, function () return ed.skin.items[index].hover end,
+                             index, function (it, v) it.hover = v end)})
+                end
             end
             if item.id == "seekbar" then
                 -- the handle colors belong to the whole skin (same as in "Оформление")
