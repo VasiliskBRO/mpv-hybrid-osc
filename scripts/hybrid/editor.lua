@@ -170,6 +170,10 @@ end
 -- a skin that never had its zones edited gets the standard zones as items, so they can be moved and deleted
 function M.with_zones(skin)
     if not skin.zones_edited then
+        -- until now every item showed with the bottom bar: keep it so, "by place" is for new objects
+        for _, item in ipairs(skin.items) do
+            if not item.show_in and not (item.custom and item.custom.kind == "zone") then item.show_in = "bottom" end
+        end
         for _, item in ipairs(api.default_zone_items(skin)) do skin.items[#skin.items + 1] = item end
         skin.zones_edited = true
     end
@@ -589,6 +593,40 @@ local function choice_list(title, list, current, index, apply)
     end
 end
 
+-- "#33ff66", "33FF66" -> "#33FF66"; nil when it is not a color code
+local function parse_color(text)
+    text = (text or ""):gsub("%s", "")
+    if text:sub(1, 1) ~= "#" then text = "#" .. text end
+    return text:match("^#%x%x%x%x%x%x$") and text:upper() or nil
+end
+
+-- a choice of colors with "Свой цвет…" at the end (a code like #33FF66)
+local function color_list(title, list, current, index, apply)
+    local base = choice_list(title, list, current, index, apply)
+    return function ()
+        local menu = base()
+        local value = current()
+        local known = false
+        for _, entry in ipairs(list) do known = known or entry[2] == value end
+        menu.items[#menu.items].separator = true
+        menu.items[#menu.items + 1] = {
+            title = "Свой цвет…", hint = (not known) and value or "код вида #33FF66", active = not known,
+            action = function ()
+                ask_text("Цвет (код вида #33FF66):", (not known) and value or "#", function (text)
+                    local color = parse_color(text)
+                    if not color then
+                        toast("Не понял цвет: нужен код вида #33FF66", 4)
+                        return
+                    end
+                    change(index, function (it) apply(it, color) end)
+                    M.render()
+                end)
+            end,
+        }
+        return menu
+    end
+end
+
 local function actions_for(index, button, label)
     return function ()
         local item = ed.skin.items[index]
@@ -677,34 +715,42 @@ local function properties(index)
                 add({title = "Что делает", icon = "touch_app", hint = count > 0 and ("изменено: " .. count) or "как обычно",
                      submenu = actions_menu(index)})
             end
-            if is_button then
+            local is_text = item.custom and item.custom.kind == "text"
+            local is_plate = item.custom and item.custom.kind == "plate"
+            local is_icon = is_button and not is_text -- an icon button (built-in or own)
+            if is_icon then
                 local shapes = {{"Нет", "none"}, {"Круг цвета темы", "accent"}, {"Белый круг", "#FFFFFF"},
-                                {"Тёмный круг", "#121218"}}
+                                {"Тёмный круг", "#121218"}, {"Чёрный круг", "#000000"}}
                 local function shape_of(it) return it.bg and (it.bg_color or "accent") or "none" end
-                add({title = "Фон кнопки", icon = "circle", hint = find_name(shapes, shape_of(item)),
-                     submenu = choice_list("Фон кнопки", shapes, function () return shape_of(ed.skin.items[index]) end, index,
+                add({title = "Фон кнопки", icon = "circle", hint = find_name(shapes, shape_of(item), shape_of(item)),
+                     submenu = color_list("Фон кнопки", shapes, function () return shape_of(ed.skin.items[index]) end, index,
                          function (it, v)
                              it.bg = v ~= "none" and "circle" or nil
                              it.bg_color = (v ~= "none" and v ~= "accent") and v or nil
                          end)})
-            elseif item.custom and item.custom.kind == "plate" then
+                if item.bg then
+                    add({title = "Прозрачность фона", icon = "opacity", hint = find_name(ALPHAS, item.bg_alpha),
+                         submenu = choice_list("Прозрачность фона", ALPHAS, function () return ed.skin.items[index].bg_alpha end,
+                             index, function (it, v) it.bg_alpha = v end)})
+                end
+            elseif is_plate then
                 local radii = {{"Круглые края", nil}, {"Без скругления", 0}, {"8 px", 8}, {"16 px", 16}, {"24 px", 24}}
                 add({title = "Скругление", icon = "rounded_corner", hint = find_name(radii, item.radius, item.radius and (item.radius .. " px")),
                      submenu = choice_list("Скругление", radii, function () return ed.skin.items[index].radius end, index,
                          function (it, v) it.radius = v end)})
-            elseif item.id ~= "seekbar" and item.id ~= "speed_ruler" then
+            end
+            if (is_text or not is_button) and not is_plate and item.id ~= "seekbar" and item.id ~= "speed_ruler" then
                 local fonts = {{"Как в теме", nil}, {"Моноширинный (Consolas)", "Consolas"}, {"Bahnschrift", "Bahnschrift"},
                                {"Segoe UI Light", "Segoe UI Light"}, {"Segoe UI Semibold", "Segoe UI Semibold"}}
                 add({title = "Шрифт", icon = "font_download", hint = find_name(fonts, item.font, item.font),
                      submenu = choice_list("Шрифт", fonts, function () return ed.skin.items[index].font end, index,
                          function (it, v) it.font = v end)})
             end
-            local is_plate = item.custom and item.custom.kind == "plate"
             if item.id ~= "speed_ruler" then
                 if not is_plate then
                     local sizes = {{"Как в теме", nil}}
-                    for _, s in ipairs({12, 14, 16, 18, 20, 22, 24, 28, 32, 36, 40, 48}) do sizes[#sizes + 1] = {s .. " px", s} end
-                    add({title = is_button and "Размер иконки" or "Размер текста", icon = "format_size",
+                    for _, s in ipairs({12, 14, 16, 18, 20, 22, 24, 28, 32, 36, 40, 48, 56, 64}) do sizes[#sizes + 1] = {s .. " px", s} end
+                    add({title = is_icon and "Размер иконки" or "Размер текста", icon = "format_size",
                          hint = item.size and (item.size .. " px") or "как в теме",
                          submenu = choice_list("Размер", sizes, function () return ed.skin.items[index].size end, index,
                              function (it, v) it.size = v end)})
@@ -712,7 +758,7 @@ local function properties(index)
                 local colors = {{"Как в теме", nil}}
                 for _, c in ipairs(COLORS) do colors[#colors + 1] = c end
                 add({title = "Цвет", icon = "palette", hint = find_name(colors, item.color, item.color),
-                     submenu = choice_list("Цвет", colors, function () return ed.skin.items[index].color end, index,
+                     submenu = color_list("Цвет", colors, function () return ed.skin.items[index].color end, index,
                          function (it, v) it.color = v end)})
             end
             add({title = "Прозрачность", icon = "opacity", hint = find_name(ALPHAS, item.alpha),
@@ -947,6 +993,22 @@ local function skin_choice(title, key)
                     return "keep"
                 end,
             }
+        end
+        if key == "bg_color" then
+            items[#items].separator = true
+            items[#items + 1] = {title = "Свой цвет…", hint = ed.skin.bg_color or "код вида #33FF66", action = function ()
+                ask_text("Цвет (код вида #33FF66):", ed.skin.bg_color or "#", function (text)
+                    local color = parse_color(text)
+                    if not color then
+                        toast("Не понял цвет: нужен код вида #33FF66", 4)
+                        return
+                    end
+                    push_undo()
+                    ed.skin.bg_color = color
+                    relayout()
+                    M.render()
+                end)
+            end}
         end
         return {title = title, items = items}
     end

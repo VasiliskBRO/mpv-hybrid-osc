@@ -5257,6 +5257,17 @@ menus.init(menu, {
         if ok then choose_skin(file, "skin") end
         return ok, err
     end,
+    -- a nearly empty skin to build from scratch in the editor: the seekbar and play
+    skin_empty = function (display_name)
+        local file = skins.new_file_name()
+        local skin = {name = display_name, height = 96, items = {
+            {id = "seekbar", anchor = "stretch", x = 24, r = 24, bottom = 52, h = 16},
+            {id = "play_pause", anchor = "center", x = -22.5, w = 45, bottom = 12, h = 28, priority = 10},
+        }}
+        local ok, err = skins.save(file, skin)
+        if ok then choose_skin(file, "skin") end
+        return ok, err
+    end,
     skin_rename = function (display_name)
         local skin = get_skin()
         skin.name = display_name

@@ -64,6 +64,8 @@ local T = {
     skins = "Скины",
     skin_classic = "Классическая раскладка (без скина)",
     skin_new = "Новый скин (копия текущего)…",
+    skin_empty = "Пустой скин…",
+    skin_empty_name = "Мой скин",
     skin_new_prompt = "Название нового скина:",
     skin_created = "Создан скин: ",
     skin_rename = "Переименовать текущий…",
@@ -416,6 +418,13 @@ local function skins_menu()
             report(ok, err, T.skin_created .. name)
         end)
     end}
+    items[#items + 1] = {title = T.skin_empty, icon = "add_box", hint = "полоса и плей — остальное добавишь сам",
+        action = function ()
+            ask_text(T.skin_new_prompt, T.skin_empty_name, function (name)
+                local ok, err = hooks.skin_empty(name)
+                report(ok, err, T.skin_created .. name)
+            end)
+        end}
     if layout == "skin" then
         items[#items + 1] = {title = T.skin_rename, icon = "drive_file_rename_outline", hint = current_name,
             action = function ()
