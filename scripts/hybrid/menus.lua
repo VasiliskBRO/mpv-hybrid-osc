@@ -59,6 +59,9 @@ local T = {
     missing = "файл не найден",
     today = "сегодня",
     yesterday = "вчера",
+    quality = "Качество",
+    quality_loading = "Узнаю доступные качества…",
+    quality_none = "Качество меняется только у стримов и онлайн-видео",
 }
 
 local LANGS = {
@@ -364,6 +367,35 @@ local function speeds()
     return {title = T.speed, items = items}
 end
 
+-- stream/online video quality, provided by scripts/stream-quality.lua through user-data
+local function quality_data()
+    local data = prop("user-data/stream-quality", {})
+    if type(data) ~= "table" then return {} end
+    return data
+end
+
+local function quality_title(data)
+    for _, item in ipairs(data.list or {}) do
+        if item.id == data.current then return item.title end
+    end
+    return data.current
+end
+
+local function qualities()
+    local data = quality_data()
+    local items = {}
+    for _, item in ipairs(data.list or {}) do
+        items[#items + 1] = {
+            title = item.title, hint = item.hint, active = item.id == data.current,
+            action = function () mp.commandv("script-message", "stream-quality-set", item.id) end,
+        }
+    end
+    if #items == 0 then
+        items[1] = {title = data.kind and T.quality_loading or T.quality_none, muted = true}
+    end
+    return {title = T.quality, items = items}
+end
+
 local function audio_devices()
     local items = {}
     local current = prop("audio-device", "auto")
@@ -521,6 +553,10 @@ local function main_menu()
     if track_counts.video > 1 then
         add({title = T.video, icon = "movie", hint = current.video, submenu = tracks("video", T.video, "vid")})
     end
+    local quality = quality_data()
+    if quality.kind then
+        add({title = T.quality, icon = "high_quality", hint = quality_title(quality), submenu = qualities})
+    end
     add({title = T.speed, icon = "speed", hint = format_speed(prop("speed", 1)), submenu = speeds})
     add({title = T.aspect, icon = "aspect_ratio", submenu = aspects})
     local loop_hints = {off = T.loop_off_hint, file = T.loop_file_hint, playlist = T.loop_playlist_hint}
@@ -559,6 +595,11 @@ function M.init(renderer)
     binding("audio-device", "audio-device", audio_devices)
     binding("aspect", "aspect", aspects)
     binding("loop", "loop", loops)
+    binding("quality", "quality", qualities)
+    -- the list of live stream qualities arrives a few seconds after the start
+    mp.observe_property("user-data/stream-quality", "native", function ()
+        if menu.is_open() then menu.refresh() end
+    end)
     mp.add_key_binding(nil, "open-file", function () menu.open("open-file", browser(start_dir(), "media")) end)
     mp.add_key_binding(nil, "load-subtitles", function () menu.open("load-subtitles", browser(start_dir(), "sub")) end)
 end

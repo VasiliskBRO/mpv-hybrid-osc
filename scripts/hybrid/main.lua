@@ -38,6 +38,7 @@ local user_opts = {
     pip_margin = 24,                       -- PiP window distance from the screen edges (px)
     speed_ruler = true,                    -- uosc-style speed ruler instead of the plain speed button
     speed_step = 0.1,                      -- speed change per wheel tick / ruler notch
+    speed_ruler_width = 96,                -- width of the speed ruler (notches spread with it)
     volume_widget = "right",               -- uosc-style vertical volume: "right", "left" or "no"
     volume_size = 36,                      -- volume widget width
     volume_step = 2,                       -- volume change per wheel tick
@@ -2531,7 +2532,7 @@ layouts["default"] = function ()
 
     -- right group, shown left to right: speed, shuffle, loop, playlist, pip, fullscreen
     -- when space runs out the least important ones are dropped first
-    local ruler_w = 96
+    local ruler_w = math.max(60, user_opts.speed_ruler_width)
     local right_budget = W / 2 - center_half - 20 - 15
     local right_items = {
         {name = "fullscreen", enabled = user_opts.fullscreen_button},
@@ -4832,6 +4833,8 @@ mp.register_event("playback-restart", function ()
     -- watch-later resume sets a per-file start (so options/start is not "none" then);
     -- only a --start given on the command line means "not a resume"
     local explicit_start = mp.get_property_native("option-info/start/set-from-commandline")
+    -- reopened in another quality by stream-quality.lua: not a resume either
+    explicit_start = explicit_start or mp.get_property_native("user-data/stream-quality-reload")
     if position > 5 and not explicit_start and (duration == 0 or position < duration - 5) then
         toast.position = position
         toast.timer = mp.add_timeout(6, hide_toast)
