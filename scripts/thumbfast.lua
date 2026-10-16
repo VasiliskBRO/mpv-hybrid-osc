@@ -454,6 +454,18 @@ local function spawn(time)
         path = open_filename
     end
 
+    -- Prism: on Windows a YouTube EDL (every format + metadata) can be longer than the command line
+    -- allows (32767 chars) and the subprocess fails to start; pass it as an .edl file instead
+    if os_name == "windows" and #path > 8000 and path:sub(1, 6) == "edl://" then
+        local edl_path = options.thumbnail .. ".edl"
+        local edl_file = io.open(edl_path, "wb")
+        if edl_file then
+            edl_file:write("# mpv EDL v0\n", path:sub(7))
+            edl_file:close()
+            path = edl_path
+        end
+    end
+
     remove_thumbnail_files()
 
     local vid = properties["vid"]

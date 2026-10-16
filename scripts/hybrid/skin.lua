@@ -3,6 +3,16 @@
 -- A skin is a JSON file in ~~/skins/<name>.json:
 --   { "name": "...", "height": 123, "items": [ item, ... ] }
 --   height - height of the bar background (virtual px, the window is 720 high)
+--   look of the skin (all optional, without them the options of hybrid.conf are used):
+--     theme          accent colors: a theme name of hybrid.conf (orange, blue, purple, green, red, pink, prism)
+--     seekbar_height thickness of the seekbar: small, medium, large, xlarge
+--     background     under the bar: "gradient" (dark fade, default), "capsule" (rounded plate), "none"
+--     bg_inset       capsule: gap to the window edges (virtual px); bg_radius - corner radius;
+--     bg_color       capsule color "#RRGGBB"; bg_alpha - capsule transparency 0..255
+--     glow           true: the played part of the seekbar glows in the accent color
+--   zones_edited - true: the hover zones are items of the skin (kind "zone"), the standard ones
+--              included (zone_bottom, zone_top, zone_volume; a deleted one does not work);
+--              otherwise the standard zones are computed and there are no own zones
 -- Item fields:
 --   id        element name (see ELEMENTS in main.lua) or "custom_*" for user-made objects
 --   anchor    "left" | "center" | "right" - x is counted from that point of the window
@@ -18,11 +28,14 @@
 --   color     "#RRGGBB" instead of the theme's color
 --   alpha     transparency 0 (opaque) .. 255 (invisible)
 --   tooltip   text shown on hover (buttons)
---   zone      item above the bar: how far around it (virtual px) the mouse shows the bar, default 20
+--   pad       bar item above the bar: how far around it (virtual px) the mouse shows the bar, default 20
+--   show_in   when the item shows: nil = with the bottom bar, "top" = with the window controls,
+--             "zone_N" = when the mouse is in that hover zone of the skin
 --   actions   {left = "mpv command", right = ..., wheel_up = ..., wheel_down = ...};
 --             "ignore" = do nothing; replaces what the element does with that button
 --   custom    objects made in the editor (id "custom_N"):
 --             {kind = "button", icon = "<Material Icons name>"} or {kind = "text", text = "..."}
+--             hover zones (id "zone_*"): {kind = "zone", name = "..."}
 
 local utils = require "mp.utils"
 
@@ -87,13 +100,22 @@ local function normalize(skin)
             item.collapse = tonumber(item.collapse)
             item.size = tonumber(item.size)
             item.alpha = tonumber(item.alpha)
-            item.zone = tonumber(item.zone)
+            -- shape behind a button: "circle" (round / pill by the box); bg_color, bg_alpha
+            item.bg = item.bg == "circle" and "circle" or nil
+            if type(item.bg_color) ~= "string" or not item.bg_color:match("^#%x%x%x%x%x%x$") then item.bg_color = nil end
+            item.bg_alpha = tonumber(item.bg_alpha)
+            if type(item.font) ~= "string" or item.font == "" then item.font = nil end
+            item.pad = tonumber(item.pad or item.zone) -- "zone" was the old name
+            item.zone = nil
+            if type(item.show_in) ~= "string" or item.show_in == "" then item.show_in = nil end
             if type(item.color) ~= "string" or not item.color:match("^#%x%x%x%x%x%x$") then item.color = nil end
             if type(item.tooltip) ~= "string" then item.tooltip = nil end
-            if type(item.custom) == "table" and (item.custom.kind == "button" or item.custom.kind == "text") then
-                item.custom = {kind = item.custom.kind,
+            local kind = type(item.custom) == "table" and item.custom.kind
+            if kind == "button" or kind == "text" or kind == "zone" then
+                item.custom = {kind = kind,
                     icon = type(item.custom.icon) == "string" and item.custom.icon or nil,
-                    text = type(item.custom.text) == "string" and item.custom.text or nil}
+                    text = type(item.custom.text) == "string" and item.custom.text or nil,
+                    name = type(item.custom.name) == "string" and item.custom.name or nil}
             else
                 item.custom = nil
             end
@@ -117,6 +139,15 @@ local function normalize(skin)
     skin.items = items
     skin.height = math.max(0, tonumber(skin.height) or M.DEFAULT.height)
     skin.name = type(skin.name) == "string" and skin.name or nil
+    skin.zones_edited = skin.zones_edited == true or nil
+    skin.theme = type(skin.theme) == "string" and skin.theme or nil
+    skin.seekbar_height = ({small = 1, medium = 1, large = 1, xlarge = 1})[skin.seekbar_height] and skin.seekbar_height or nil
+    skin.background = ({gradient = 1, capsule = 1, none = 1})[skin.background] and skin.background or nil
+    skin.bg_inset = tonumber(skin.bg_inset)
+    skin.bg_radius = tonumber(skin.bg_radius)
+    skin.bg_alpha = tonumber(skin.bg_alpha)
+    if type(skin.bg_color) ~= "string" or not skin.bg_color:match("^#%x%x%x%x%x%x$") then skin.bg_color = nil end
+    skin.glow = skin.glow == true or nil
     return skin
 end
 
@@ -136,7 +167,9 @@ end
 
 -- JSON with a stable key order and one item per line, so the file stays readable
 local KEY_ORDER = {"id", "custom", "anchor", "x", "w", "r", "bottom", "h", "priority", "hide_below", "collapse",
-                   "size", "color", "alpha", "zone", "tooltip", "actions"}
+                   "size", "color", "alpha", "font", "bg", "bg_color", "bg_alpha", "pad", "show_in", "tooltip", "actions"}
+local LOOK_KEYS = {"theme", "seekbar_height", "background", "bg_inset", "bg_radius", "bg_color", "bg_alpha", "glow"}
+M.LOOK_KEYS = LOOK_KEYS
 
 local function json_value(value)
     if type(value) == "number" then
@@ -169,6 +202,10 @@ function M.encode(skin)
     local lines = {"{"}
     lines[#lines + 1] = string.format('  "name": %s,', utils.format_json(skin.name or ""))
     lines[#lines + 1] = string.format('  "height": %s,', json_value(skin.height or M.DEFAULT.height))
+    for _, key in ipairs(LOOK_KEYS) do
+        if skin[key] ~= nil then lines[#lines + 1] = string.format('  %q: %s,', key, json_value(skin[key])) end
+    end
+    if skin.zones_edited then lines[#lines + 1] = '  "zones_edited": true,' end
     lines[#lines + 1] = '  "items": ['
     for i, item in ipairs(skin.items) do
         lines[#lines + 1] = "    " .. json_object(item, KEY_ORDER) .. (i < #skin.items and "," or "")
