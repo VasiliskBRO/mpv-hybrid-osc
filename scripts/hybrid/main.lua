@@ -677,7 +677,8 @@ local state = {
     anistart = nil,                         -- time when the animation started
     anitype = nil,                          -- current type of animation
     animation = nil,                        -- current animation alpha
-    mouse_down_counter = 0,                 -- used for softrepeat
+    mouse_down_counter = 0,                 -- renders while a button is held
+    next_repeat_time = nil,                 -- mp.get_time() of the next softrepeat
     active_element = nil,                   -- nil = none, 0 = background, 1+ = see elements[]
     active_event_source = nil,              -- the "button" that issued the current event
     tc_left_rem = not user_opts.timecurrent,-- if the left timecode should display current or remaining time
@@ -1770,7 +1771,10 @@ local function render_elements(master_ass)
                     end
                     style_ass:append(down_style)
                 end
-                if element.softrepeat and state.mouse_down_counter >= 15 and state.mouse_down_counter % 5 == 0 then
+                -- held for 0.5 s -> repeat every 0.15 s; a plain click never repeats
+                local now = mp.get_time()
+                if element.softrepeat and state.next_repeat_time and now >= state.next_repeat_time then
+                    state.next_repeat_time = now + 0.15
                     element.eventresponder[state.active_event_source.."_down"](element)
                 end
                 state.mouse_down_counter = state.mouse_down_counter + 1
@@ -4293,6 +4297,8 @@ local function process_event(source, what)
                 if what == "down" then
                     state.active_element = n
                     state.active_event_source = source
+                    -- softrepeat goes by the clock, not by redraws (see render_elements)
+                    state.next_repeat_time = mp.get_time() + 0.5
                 end
                 -- fire the down or press event if the element has one
                 if element_has_action(elements[n], action) then
@@ -4319,6 +4325,7 @@ local function process_event(source, what)
         end
         state.active_element = nil
         state.mouse_down_counter = 0
+        state.next_repeat_time = nil
     elseif source == "mouse_move" then
         state.mouse_in_window = true
 
@@ -5194,6 +5201,7 @@ local function osc_suspend(suspend)
         end
         state.active_element = nil
         state.mouse_down_counter = 0
+        state.next_repeat_time = nil
         kill_animation("anitype", "anistart", "animation")
         kill_animation("wc_anitype", "wc_anistart", "wc_animation")
         kill_animation("vol_anitype", "vol_anistart", "vol_animation")
