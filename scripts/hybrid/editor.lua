@@ -92,7 +92,7 @@ M.item_name = item_name
 local T = {
     save = "Сохранить", undo = "Шаг назад", create = "Создать объект", reset = "Как по умолчанию", exit = "Выйти",
     hint = "Тащи мышкой, за уголок — размер · правый клик — свойства · стрелки — точно · Delete — убрать",
-    height = "высота фона",
+    height = "тёмная подложка",
     zone = "зона наведения",
     saved = "Скин сохранён",
     save_failed = "Не удалось сохранить: %s",
@@ -650,9 +650,17 @@ local function properties(index)
             end})
         else
             -- where the item shows: with the bottom bar, the top bar or by a hover zone of the skin
-            local places = {{"Нижняя панель", nil}, {"Верхняя панель", "top"}}
+            local places = {{"Авто — по месту", nil}, {"Нижняя панель", "bottom"}, {"Верхняя панель", "top"}}
             for _, z in ipairs(own_zones()) do places[#places + 1] = {z.name, z.id} end
-            add({title = "Появляется в зоне", icon = "highlight_alt", hint = find_name(places, item.show_in, item.show_in),
+            local hint = find_name(places, item.show_in, item.show_in)
+            if not item.show_in then
+                -- by place: say where the item is now
+                local group = (entries()[index] or {}).group
+                local now = (group == "top" or group == "zone_top") and "верхняя панель" or "нижняя панель"
+                for _, z in ipairs(own_zones()) do if z.id == group then now = z.name end end
+                hint = "авто: " .. now
+            end
+            add({title = "Появляется в зоне", icon = "highlight_alt", hint = hint,
                  submenu = choice_list("Когда появляется", places, function () return ed.skin.items[index].show_in end,
                      index, function (it, v) it.show_in = v end)})
             if is_button then
@@ -681,7 +689,7 @@ local function properties(index)
                  submenu = choice_list("Когда окно узкое", PRIORITIES, function () return ed.skin.items[index].priority end,
                      index, function (it, v) it.priority = v end)})
             -- a bar item placed above the bar background has its own small zone around it
-            if not item.show_in and item.bottom >= ed.skin.height then
+            if (entries()[index] or {}).group == "bottom" and item.bottom >= ed.skin.height then
                 add({title = "Запас вокруг кнопки", icon = "crop_free", hint = find_name(PADS, item.pad, item.pad and (item.pad .. " px")),
                      submenu = choice_list("Где мышь показывает панель", PADS, function () return ed.skin.items[index].pad end,
                          index, function (it, v) it.pad = v end)})
@@ -1005,6 +1013,9 @@ bind = function ()
         {"del", remove_selected},
         {"ctrl+z", undo},
         {"ctrl+s", function () if ed.dirty then save() end end},
+        -- the same keys with the Russian keyboard layout
+        {"ctrl+я", undo},
+        {"ctrl+ы", function () if ed.dirty then save() end end},
         {"esc", function ()
             if ed.selected then ed.selected = nil M.render() else press_button("exit") end
         end},

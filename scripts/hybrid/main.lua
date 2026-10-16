@@ -2678,10 +2678,27 @@ local function is_skin_zone(item)
 end
 
 -- which group shows a skin item: "bottom" (the bar), "top" (with the window controls)
--- or the id of a hover zone of the skin ("zone_*"); without a top bar the top zone works as an own zone
-local function skin_item_group(skin, item)
+-- or the id of a hover zone of the skin ("zone_*"); without a top bar the top zone works as an own zone.
+-- show_in nil = by place: the smallest own zone or the top zone that holds the item's center
+local function skin_item_group(skin, entry, list)
+    local item = entry.item
     local target = item.show_in
-    if not target then return "bottom" end
+    if target == "bottom" then return "bottom" end
+    if not target then
+        if not skin.zones_edited then return "bottom" end
+        local cx, cy = (entry.x1 + entry.x2) / 2, (entry.y1 + entry.y2) / 2
+        local best_area
+        for _, z in ipairs(list) do
+            local id = z.is_zone and z.item.id
+            if id and id ~= "zone_bottom" and id ~= "zone_volume"
+               and cx >= z.x1 and cx <= z.x2 and cy >= z.y1 and cy <= z.y2 then
+                local area = (z.x2 - z.x1) * (z.y2 - z.y1)
+                if not best_area or area < best_area then target, best_area = id, area end
+            end
+        end
+        if not target then return "bottom" end
+        if target == "zone_top" then target = "top" end
+    end
     if target == "top" then
         if window_controls_enabled() then return "top" end
         target = "zone_top"
@@ -2711,7 +2728,6 @@ local function resolve_skin(skin, W, H, editing)
             entry.fits = not item.hide_below or W >= item.hide_below
             entry.shown = entry.exists and entry.fits and skin_item_allowed(item.id)
             entry.visible = editing and entry.exists or entry.shown
-            entry.group = skin_item_group(skin, item)
         end
         -- an item placed above the bar background lives on its own: it does not move with the bar
         -- and gets its own hover zone
@@ -2740,6 +2756,9 @@ local function resolve_skin(skin, W, H, editing)
         end
         local y2 = H - (item.bottom - dy)
         entry.x1, entry.y1, entry.x2, entry.y2 = x1, y2 - item.h, math.max(x1, x2), y2
+    end
+    for _, entry in ipairs(list) do
+        if not entry.is_zone then entry.group = skin_item_group(skin, entry, list) end
     end
 
     -- crowded items (narrow window): of two items with a priority that overlap or nearly touch,
