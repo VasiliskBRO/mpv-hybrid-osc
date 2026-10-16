@@ -24,7 +24,7 @@ M.NAMES = NAMES
 
 local T = {
     save = "Сохранить", undo = "Шаг назад", reset = "Как по умолчанию", exit = "Выйти",
-    hint = "Тащи элемент мышкой, за уголок — размер · стрелки — точно · Delete — убрать · Tab — следующий",
+    hint = "Тащи мышкой, за уголок — размер · правый клик — свойства · стрелки — точно · Delete — убрать",
     height = "высота фона",
     saved = "Скин сохранён",
     save_failed = "Не удалось сохранить: %s",
@@ -138,9 +138,9 @@ function M.render()
     fill(ass, hx1, hy1, hx2, hy2, ed.hover == "height" and accent or "#202020", 0x30)
     text(ass, (hx1 + hx2) / 2, (hy1 + hy2) / 2, 5, "↕ " .. T.height, 12)
 
-    -- item frames
+    -- item frames (only the selected one while its property menu is open)
     for i, e in ipairs(list) do
-        if i ~= ed.selected then
+        if i ~= ed.selected and not ed.menu_open then
             local color, alpha = "#FFFFFF", ed.hover == i and 0x00 or 0x70
             if not e.exists or not e.shown then color, alpha = "#9A9A9A", 0x80 end
             frame(ass, e.x1, e.y1, e.x2, e.y2, color, alpha, ed.hover == i and 1.5 or 1)
@@ -335,6 +335,261 @@ local function press_button(id)
     end
 end
 
+-- properties menu -------------------------------------------------------------------------
+
+-- what a button can do; command nil = what the element does by itself
+local ACTIONS = {
+    {"Как обычно", nil},
+    {"Ничего", "ignore"},
+    {"Пауза / воспроизведение", "cycle pause"},
+    {"Полный экран", "cycle fullscreen"},
+    {"Назад на 5 с", "seek -5"}, {"Вперёд на 5 с", "seek 5"},
+    {"Назад на 10 с", "seek -10"}, {"Вперёд на 10 с", "seek 10"},
+    {"Назад на 30 с", "seek -30"}, {"Вперёд на 30 с", "seek 30"},
+    {"Назад на 1 мин", "seek -60"}, {"Вперёд на 1 мин", "seek 60"},
+    {"В начало видео", "seek 0 absolute"},
+    {"Предыдущее видео", "playlist-prev"}, {"Следующее видео", "playlist-next"},
+    {"Предыдущая глава", "add chapter -1"}, {"Следующая глава", "add chapter 1"},
+    {"Громче", "no-osd add volume 5"}, {"Тише", "no-osd add volume -5"},
+    {"Выключить / включить звук", "cycle mute"},
+    {"Скорость 1×", "set speed 1"}, {"Скорость 1.25×", "set speed 1.25"},
+    {"Скорость 1.5×", "set speed 1.5"}, {"Скорость 2×", "set speed 2"},
+    {"Быстрее на 0.1", "add speed 0.1"}, {"Медленнее на 0.1", "add speed -0.1"},
+    {"Скриншот", "osd-msg screenshot"}, {"Скриншот без субтитров", "osd-msg screenshot video"},
+    {"Следующие субтитры", "cycle sub"}, {"Следующая аудиодорожка", "cycle audio"},
+    {"Главное меню", "script-binding hybrid/menu"},
+    {"Меню субтитров", "script-binding hybrid/subtitles"},
+    {"Меню аудиодорожек", "script-binding hybrid/audio"},
+    {"Плейлист", "script-binding hybrid/playlist"},
+    {"Главы", "script-binding hybrid/chapters"},
+    {"Качество стрима", "script-binding hybrid/quality"},
+    {"Недавние файлы", "script-binding hybrid/history"},
+    {"Открыть файл", "script-binding hybrid/open-file"},
+    {"Картинка в картинке", "script-binding hybrid/pip"},
+    {"Повтор файла вкл/выкл", "cycle-values loop-file inf no"},
+    {"Поверх всех окон вкл/выкл", "cycle ontop"},
+    {"Статистика", "script-binding stats/display-stats-toggle"},
+    {"Свернуть окно", "cycle window-minimized"},
+    {"Закрыть плеер", "quit"},
+}
+
+local BUTTONS = {
+    {"left", "Левая кнопка мыши"}, {"right", "Правая кнопка мыши"},
+    {"wheel_up", "Колесо вверх"}, {"wheel_down", "Колесо вниз"},
+}
+
+local COLORS = {
+    {"Белый", "#FFFFFF"}, {"Светло-серый", "#C8C8C8"}, {"Серый", "#808080"}, {"Чёрный", "#000000"},
+    {"Красный", "#F44336"}, {"Оранжевый", "#FF8232"}, {"Жёлтый", "#FFD54F"}, {"Зелёный", "#66BB6A"},
+    {"Бирюзовый", "#26C6DA"}, {"Голубой", "#4FC3F7"}, {"Синий", "#3F7BFF"}, {"Фиолетовый", "#AB47BC"},
+    {"Розовый", "#F06292"},
+}
+
+local ALPHAS = {{"Непрозрачный", nil}, {"Чуть прозрачный (25%)", 64}, {"Полупрозрачный (50%)", 128},
+                {"Почти невидимый (75%)", 192}}
+
+local PRIORITIES = {
+    {"Никогда не прятать", nil}, {"Прятать последним", 9}, {"Прятать позже других", 6},
+    {"Прятать раньше других", 3}, {"Прятать первым", 1},
+}
+
+local function action_name(command)
+    if not command then return ACTIONS[1][1] end
+    for _, a in ipairs(ACTIONS) do
+        if a[2] == command then return a[1] end
+    end
+    return command
+end
+
+local function find_name(list, value, default)
+    for _, entry in ipairs(list) do
+        if entry[2] == value then return entry[1] end
+    end
+    return default or tostring(value)
+end
+
+-- text input through the mpv console (mp.input, mpv 0.38+)
+local function ask_text(prompt, default, done)
+    local ok, input = pcall(require, "mp.input")
+    if not ok then
+        toast("Ввод текста недоступен в этой версии mpv", 4)
+        return
+    end
+    input.get({
+        prompt = prompt .. " ",
+        default_text = default or "",
+        submit = function (text)
+            input.terminate()
+            done(text)
+        end,
+    })
+end
+
+local function change(index, fn)
+    local item = ed.skin.items[index]
+    if not item then return end
+    push_undo()
+    fn(item)
+    relayout()
+end
+
+local function choice_list(title, list, current, index, apply)
+    return function ()
+        local items = {}
+        for _, entry in ipairs(list) do
+            items[#items + 1] = {
+                title = entry[1], active = entry[2] == current(),
+                action = function ()
+                    change(index, function (item) apply(item, entry[2]) end)
+                    return "keep"
+                end,
+            }
+        end
+        return {title = title, items = items}
+    end
+end
+
+local function actions_for(index, button, label)
+    return function ()
+        local item = ed.skin.items[index]
+        local current = item and item.actions and item.actions[button]
+        local items = {}
+        local known = current == nil
+        for _, a in ipairs(ACTIONS) do
+            if a[2] == current then known = true end
+            items[#items + 1] = {
+                title = a[1], active = a[2] == current,
+                action = function ()
+                    change(index, function (it)
+                        it.actions = it.actions or {}
+                        it.actions[button] = a[2]
+                        if not next(it.actions) then it.actions = nil end
+                    end)
+                    return "keep"
+                end,
+            }
+        end
+        items[#items].separator = true
+        items[#items + 1] = {
+            title = "Своя команда mpv…", hint = (not known) and current or nil, active = not known,
+            action = function ()
+                ask_text("Команда mpv (например: seek 15):", current, function (text)
+                    if text == "" then return end
+                    change(index, function (it)
+                        it.actions = it.actions or {}
+                        it.actions[button] = text
+                    end)
+                    M.render()
+                end)
+            end,
+        }
+        return {title = label, items = items}
+    end
+end
+
+local function actions_menu(index)
+    return function ()
+        local item = ed.skin.items[index]
+        local items = {}
+        for _, b in ipairs(BUTTONS) do
+            local command = item and item.actions and item.actions[b[1]]
+            items[#items + 1] = {title = b[2], hint = action_name(command), submenu = actions_for(index, b[1], b[2])}
+        end
+        return {title = "Что делает", items = items}
+    end
+end
+
+local function properties(index)
+    return function ()
+        local item = ed.skin.items[index]
+        if not item then return {title = "—", items = {}} end
+        local is_button = api.element_type(item.id) == "button"
+        local W = api.dims()
+        local items = {}
+        local function add(entry) items[#items + 1] = entry end
+
+        if is_button then
+            local count = 0
+            for _ in pairs(item.actions or {}) do count = count + 1 end
+            add({title = "Что делает", icon = "touch_app", hint = count > 0 and ("изменено: " .. count) or "как обычно",
+                 submenu = actions_menu(index)})
+        end
+        if item.id ~= "speed_ruler" then
+            local sizes = {{"Как в теме", nil}}
+            for _, s in ipairs({12, 14, 16, 18, 20, 22, 24, 28, 32, 36, 40, 48}) do sizes[#sizes + 1] = {s .. " px", s} end
+            add({title = is_button and "Размер иконки" or "Размер текста", icon = "format_size",
+                 hint = item.size and (item.size .. " px") or "как в теме",
+                 submenu = choice_list("Размер", sizes, function () return ed.skin.items[index].size end, index,
+                     function (it, v) it.size = v end)})
+            local colors = {{"Как в теме", nil}}
+            for _, c in ipairs(COLORS) do colors[#colors + 1] = c end
+            add({title = "Цвет", icon = "palette", hint = find_name(colors, item.color, item.color),
+                 submenu = choice_list("Цвет", colors, function () return ed.skin.items[index].color end, index,
+                     function (it, v) it.color = v end)})
+        end
+        add({title = "Прозрачность", icon = "opacity", hint = find_name(ALPHAS, item.alpha),
+             submenu = choice_list("Прозрачность", ALPHAS, function () return ed.skin.items[index].alpha end, index,
+                 function (it, v) it.alpha = v end)})
+        add({title = "Когда мало места", icon = "unfold_less", hint = find_name(PRIORITIES, item.priority),
+             submenu = choice_list("Когда окно узкое", PRIORITIES, function () return ed.skin.items[index].priority end,
+                 index, function (it, v) it.priority = v end)})
+        if is_button then
+            add({title = "Подсказка при наведении", icon = "chat_bubble_outline",
+                 hint = item.tooltip or "как обычно", action = function ()
+                ask_text("Текст подсказки (пусто — как обычно):", item.tooltip, function (text)
+                    change(index, function (it) it.tooltip = text ~= "" and text or nil end)
+                    M.render()
+                end)
+            end})
+        end
+        local e = entries()[index]
+        if item.anchor == "stretch" then
+            add({title = "Не растягивать", icon = "close_fullscreen", action = function ()
+                change(index, function (it)
+                    it.anchor, it.w, it.r = "left", round(e.x2 - e.x1), nil
+                end)
+                reanchor(index)
+                relayout()
+                return "keep"
+            end})
+        else
+            add({title = "Растянуть на всю ширину", icon = "open_in_full", action = function ()
+                change(index, function (it)
+                    it.anchor, it.x, it.r, it.w = "stretch", round(e.x1), round(W - e.x2), nil
+                end)
+                return "keep"
+            end})
+            add({title = "Поставить по центру окна", icon = "align_horizontal_center", action = function ()
+                change(index, function (it) it.anchor, it.x = "center", round(-(it.w or 0) / 2) end)
+                return "keep"
+            end})
+        end
+        add({title = "Удалить", icon = "delete", action = function ()
+            ed.selected = index
+            remove_selected()
+        end})
+        return {title = NAMES[item.id] or item.id, items = items}
+    end
+end
+
+local bind, unbind
+
+local function open_properties(index)
+    ed.selected = index
+    ed.menu_open = true
+    unbind() -- the menu takes the mouse and the keyboard
+    M.render()
+    api.menu.open("skin-properties", properties(index))
+end
+
+-- called by main.lua when the menu closes while the editor is open
+function M.menu_closed()
+    if not ed or not ed.menu_open then return end
+    ed.menu_open = false
+    bind()
+    M.render()
+end
+
 -- input ---------------------------------------------------------------------------------
 
 local function on_mouse_move()
@@ -401,7 +656,16 @@ end
 local bindings
 local MOUSE_SECTION = "hybrid_editor_mouse"
 
-local function bind()
+local function on_right()
+    local kind, value = hit(mouse())
+    if kind == "item" then
+        open_properties(value)
+    elseif kind == "handle" and ed.selected then
+        open_properties(ed.selected)
+    end
+end
+
+bind = function ()
     -- the mouse goes through a section whose mouse area is the whole window: such a section
     -- forbids window dragging, otherwise holding the button and moving would move the mpv
     -- window (and mpv would release the button in the middle of a drag)
@@ -409,7 +673,7 @@ local function bind()
     mp.set_key_bindings({
         {"mouse_move", on_mouse_move},
         {"mbtn_left", function () on_left({event = "up"}) end, function () on_left({event = "down"}) end},
-        {"mbtn_left_dbl", noop}, {"mbtn_right", noop}, {"mbtn_right_dbl", noop}, {"mbtn_mid", noop},
+        {"mbtn_left_dbl", noop}, {"mbtn_right", on_right}, {"mbtn_right_dbl", noop}, {"mbtn_mid", noop},
         {"wheel_up", noop}, {"wheel_down", noop}, {"wheel_left", noop}, {"wheel_right", noop},
     }, MOUSE_SECTION, "force")
     mp.set_mouse_area(0, 0, 100000, 100000, MOUSE_SECTION)
@@ -444,7 +708,7 @@ local function bind()
     end
 end
 
-local function unbind()
+unbind = function ()
     mp.disable_key_bindings(MOUSE_SECTION)
     for i in ipairs(bindings or {}) do mp.remove_key_binding("hybrid-editor-" .. i) end
     bindings = nil

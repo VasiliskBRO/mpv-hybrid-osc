@@ -2126,12 +2126,12 @@ local function download_done(success, _, error)
     state.downloading = false
 end
 
--- names of the elements created by the last osc_init (prepare_elements() turns
+-- name -> type of the elements created by the last osc_init (prepare_elements() turns
 -- "elements" into a plain list, the skin editor still needs to look them up by name)
 local element_names = {}
 
 local function new_element(name, type)
-    element_names[name] = true
+    element_names[name] = type
     elements[name] = {}
     elements[name].type = type
     elements[name].name = name
@@ -2640,7 +2640,7 @@ local function resolve_skin(skin, W, H, editing)
     local collapses, lowered = {}, 0
     for _, item in ipairs(skin.items) do
         local entry = {item = item}
-        entry.exists = element_names[item.id] == true
+        entry.exists = element_names[item.id] ~= nil
         entry.fits = not item.hide_below or W >= item.hide_below
         entry.shown = entry.exists and entry.fits and skin_item_allowed(item.id)
         entry.visible = editing and entry.exists or entry.shown
@@ -2693,6 +2693,41 @@ local function resolve_skin(skin, W, H, editing)
         if entry.visible then kept[#kept + 1] = entry end
     end
     return list, math.max(0, skin.height - lowered)
+end
+
+-- mouse buttons of skin item actions -> element event names
+local SKIN_EVENTS = {
+    left = {"mbtn_left_up", "mbtn_left_down", "shift+mbtn_left_down"},
+    right = {"mbtn_right_up", "mbtn_right_down"},
+    wheel_up = {"wheel_up_press"},
+    wheel_down = {"wheel_down_press"},
+}
+
+-- look and behaviour set in the editor: icon size, color, transparency, tooltip, actions
+local function apply_skin_item(id, lo, item)
+    local element = elements[id]
+    if lo.style and item.size then
+        lo.style = lo.style:gsub("\\fs[%d%.]+", "\\fs" .. item.size)
+    end
+    if lo.style and item.color then
+        local color = "\\1c&H" .. osc_color_convert(item.color) .. "&"
+        local replaced
+        lo.style, replaced = lo.style:gsub("\\1c&H%x+&", color)
+        if replaced == 0 then lo.style = lo.style .. "{" .. color .. "}" end
+    end
+    if item.alpha then lo.alpha[1] = item.alpha end
+    if element.type ~= "button" then return end
+    if item.tooltip and item.tooltip ~= "" then element.tooltipF = item.tooltip end
+    for button, command in pairs(item.actions or {}) do
+        local events = SKIN_EVENTS[button]
+        if events then
+            -- the editor's action replaces everything the element did with this button
+            for _, event in ipairs(events) do element.eventresponder[event] = nil end
+            if command ~= "ignore" then
+                element.eventresponder[events[1]] = function () mp.command(command) end
+            end
+        end
+    end
 end
 
 layouts["skin"] = function ()
@@ -2757,11 +2792,12 @@ layouts["skin"] = function ()
                 lo.alpha[3] = 0
                 lo.style = id == "time_codes" and osc_styles.time or osc_styles.cache
             elseif id == "speed_ruler" then
-                place(id, 5, e)
+                lo = place(id, 5, e)
             else
                 lo = place(id, 5, e)
                 lo.style = osc_styles[SKIN_STYLES[id] or "control_3"]
             end
+            apply_skin_item(id, lo, e.item)
         elseif e.exists then
             elements[id].visible = false
         end
@@ -4829,8 +4865,11 @@ menu.setup({
     icon_font = material_font,
     accent = user_opts.seekbarfg_color,
     bg = user_opts.osc_color,
-    on_open = function () osc_suspend(true) end,
-    on_close = function () osc_suspend(false) end,
+    -- the skin editor opens its property menus over a visible bar
+    on_open = function () if not state.skin_editing then osc_suspend(true) end end,
+    on_close = function ()
+        if state.skin_editing then editor.menu_closed() else osc_suspend(false) end
+    end,
 })
 menus.init(menu)
 
@@ -4850,6 +4889,8 @@ editor.init({
     scale = get_virt_scale_factor,
     accent = function () return user_opts.seekbarfg_color end,
     font = function () return user_opts.font end,
+    menu = menu,
+    element_type = function (id) return element_names[id] end,
     set_editing = function (on)
         if on then
             menu.close()

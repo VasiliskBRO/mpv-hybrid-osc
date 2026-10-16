@@ -14,6 +14,12 @@
 --   hide_below  hide the item when the window is narrower than this (virtual px)
 --   collapse  when this item is hidden, items above it move down by this much
 --             and the bar gets lower (used for the chapter line)
+--   size      icon / text size instead of the theme's one
+--   color     "#RRGGBB" instead of the theme's color
+--   alpha     transparency 0 (opaque) .. 255 (invisible)
+--   tooltip   text shown on hover (buttons)
+--   actions   {left = "mpv command", right = ..., wheel_up = ..., wheel_down = ...};
+--             "ignore" = do nothing; replaces what the element does with that button
 
 local utils = require "mp.utils"
 
@@ -76,6 +82,19 @@ local function normalize(skin)
             item.priority = tonumber(item.priority)
             item.hide_below = tonumber(item.hide_below)
             item.collapse = tonumber(item.collapse)
+            item.size = tonumber(item.size)
+            item.alpha = tonumber(item.alpha)
+            if type(item.color) ~= "string" or not item.color:match("^#%x%x%x%x%x%x$") then item.color = nil end
+            if type(item.tooltip) ~= "string" then item.tooltip = nil end
+            if type(item.actions) == "table" then
+                local actions = {}
+                for button, command in pairs(item.actions) do
+                    if type(command) == "string" and command ~= "" then actions[button] = command end
+                end
+                item.actions = next(actions) and actions or nil
+            else
+                item.actions = nil
+            end
             if item.anchor == "stretch" then
                 item.r = tonumber(item.r) or 0
             else
@@ -105,7 +124,8 @@ function M.load(name)
 end
 
 -- JSON with a stable key order and one item per line, so the file stays readable
-local KEY_ORDER = {"id", "anchor", "x", "w", "r", "bottom", "h", "priority", "hide_below", "collapse"}
+local KEY_ORDER = {"id", "anchor", "x", "w", "r", "bottom", "h", "priority", "hide_below", "collapse",
+                   "size", "color", "alpha", "tooltip", "actions"}
 
 local function json_value(value)
     if type(value) == "number" then
