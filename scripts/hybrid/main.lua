@@ -172,7 +172,7 @@ local user_opts = {
     seekbarbg_color = "#999999",           -- color of the remaining seekbar
     seek_handle_color = "#C96508",         -- color of the seekbar handle
     seek_handle_border_color = "#FF8232",  -- inner border color drawn inside the seekbar handle (set to "disable" to disable)
-    volumebar_match_seek_color = false,    -- match volume bar color with seekbar color (ignores side_buttons_color)
+    volumebar_match_seek_color = true,     -- volume bar fill in the seekbar (theme) color; no = side_buttons_color
     time_color = "#FFFFFF",                -- color of the timestamps (below seekbar)
     chapter_title_color = "#FFFFFF",       -- color of the chapter title
     side_buttons_color = "#FFFFFF",        -- color of the side buttons (audio, subtitles, playlist, etc.)
@@ -677,7 +677,8 @@ local state = {
     anistart = nil,                         -- time when the animation started
     anitype = nil,                          -- current type of animation
     animation = nil,                        -- current animation alpha
-    mouse_down_counter = 0,                 -- used for softrepeat
+    mouse_down_counter = 0,                 -- renders while a button is held
+    next_repeat_time = nil,                 -- mp.get_time() of the next softrepeat
     active_element = nil,                   -- nil = none, 0 = background, 1+ = see elements[]
     active_event_source = nil,              -- the "button" that issued the current event
     tc_left_rem = not user_opts.timecurrent,-- if the left timecode should display current or remaining time
@@ -709,6 +710,9 @@ local state = {
     showhide_enabled = false,
     zone_visible = {},                      -- skin hover zones made in the editor: zone id -> shown
     zone_showtime = {},
+    zone_anitype = {},                      -- zone id -> "in" / "out" while it fades
+    zone_anistart = {},
+    zone_animation = {},
     windowcontrols_buttons = false,
     windowcontrols_title = false,
     windowcontrols_ontop = false,
@@ -1709,7 +1713,7 @@ end
 local function group_visible(element)
     local g = element.layout and element.layout.group
     if g == "top" then return state.wc_visible end
-    if g == "vol" then return state.vol_visible end
+    if g == "vol" then return state.vol_visible or state.skin_editing end
     if is_zone_group(g) then return zone_group_visible(g) end
     return state.osc_visible
 end
@@ -1720,7 +1724,7 @@ local function group_anim(element)
     local g = element.layout.group
     if g == "top" then return state.wc_animation or 0 end
     if g == "vol" then return state.vol_animation or 0 end
-    if is_zone_group(g) then return 0 end
+    if is_zone_group(g) then return state.zone_animation[g] or 0 end
     return nil
 end
 
@@ -1770,7 +1774,10 @@ local function render_elements(master_ass)
                     end
                     style_ass:append(down_style)
                 end
-                if element.softrepeat and state.mouse_down_counter >= 15 and state.mouse_down_counter % 5 == 0 then
+                -- held for 0.5 s -> repeat every 0.15 s; a plain click never repeats
+                local now = mp.get_time()
+                if element.softrepeat and state.next_repeat_time and now >= state.next_repeat_time then
+                    state.next_repeat_time = now + 0.15
                     element.eventresponder[state.active_event_source.."_down"](element)
                 end
                 state.mouse_down_counter = state.mouse_down_counter + 1
@@ -2243,8 +2250,11 @@ local function window_controls()
 
     local lo
     local ontop_active = user_opts.ontop_button and window_controls_enabled() and user_opts.ontop_in_topbar and state.ontop
-    local controlbox_w = (user_opts.window_controls and window_control_box_width or 0)
-    local controlbox_left = wc_geo.w - controlbox_w
+    -- a skin with wc_edited lays out close / maximize / minimize itself (osc_param.skin_wc, set by
+    -- layouts["skin"]): no buttons and no click box here, the title ends where its buttons start
+    local skin_wc = osc_param.skin_wc
+    local controlbox_w = (user_opts.window_controls and not skin_wc and window_control_box_width or 0)
+    local controlbox_left = skin_wc and skin_wc.left or (wc_geo.w - controlbox_w)
     local titlebox_left = ontop_active and 50 or wc_geo.x
     local button_y = wc_geo.y - (wc_geo.h / 2)
     local first_geo  = {x = controlbox_left + 25,  y = button_y, an = 5, w = 50, h = wc_geo.h}
@@ -2252,7 +2262,7 @@ local function window_controls()
     local third_geo  = {x = controlbox_left + 125, y = button_y, an = 5, w = 50, h = wc_geo.h}
 
     -- Window controls
-    if user_opts.window_controls then
+    if user_opts.window_controls and not skin_wc then
         local size_hover = hover_effects.size and
             string.format("\\fscx%s\\fscy%s", user_opts.button_hover_size, user_opts.button_hover_size) or ""
         local function wc_hoverstyle(color)
@@ -2316,20 +2326,33 @@ local function volume_layout()
     local size = user_opts.volume_size
     local top_y = window_controls_enabled() and 50 or 0
     local bottom_y = H - osc_param.video_margins.b * H
-    local available = bottom_y - top_y
-    local height = math.floor(math.min(size * 8, available * 0.8))
-    if height < size * 3 then return end -- window too small
-
-    local margin = math.floor(size / 2)
-    local x1 = user_opts.volume_widget == "left" and margin or (W - margin - size)
-    local y1 = top_y + math.floor((available - height) / 2)
-    local y2 = y1 + height
-    local slider_y2 = y2 - size - 4
+    local side = user_opts.volume_widget
+    local x1, y1, y2
+    local sv = osc_param.skin_volume
+    if sv then
+        -- the skin has the widget as an item ("volume"): its box is the slider plus the mute button
+        size = math.max(12, sv.x2 - sv.x1)
+        x1, y1, y2 = sv.x1, sv.y1, math.max(sv.y2, sv.y1 + size * 2 + 30)
+        side = (sv.x1 + sv.x2) / 2 < W / 2 and "left" or "right"
+    else
+        local available = bottom_y - top_y
+        local height = math.floor(math.min(size * 8, available * 0.8))
+        if height < size * 3 then return end -- window too small
+        local margin = math.floor(size / 2)
+        x1 = side == "left" and margin or (W - margin - size)
+        y1 = top_y + math.floor((available - height) / 2)
+        y2 = y1 + height
+    end
+    osc_param.volume_rect = {x1 = x1, y1 = y1, x2 = x1 + size, y2 = y2}
+    -- one capsule: the value on top (26 px), the track, the speaker button at the bottom
+    local slider_y1 = y1 + 26
+    local slider_y2 = y2 - size - 2
 
     local lo = add_layout("vol_slider")
-    lo.geometry = {x = x1, y = y1, an = 7, w = size, h = slider_y2 - y1}
+    lo.geometry = {x = x1, y = slider_y1, an = 7, w = size, h = slider_y2 - slider_y1}
     lo.group = "vol"
     lo.layer = 60
+    lo.vol_card = {x1 = x1, y1 = y1, x2 = x1 + size, y2 = y2}
 
     lo = add_layout("vol_mute")
     lo.geometry = {x = x1 + size / 2, y = y2 - size / 2, an = 5, w = 24, h = 24}
@@ -2338,8 +2361,8 @@ local function volume_layout()
     lo.layer = 60
 
     -- the proximity zone must not overlap the bottom/top show zones (separate input sections)
-    local zone_x1 = user_opts.volume_widget == "left" and 0 or (W - size * 3.5)
-    local zone_x2 = user_opts.volume_widget == "left" and size * 3.5 or W
+    local zone_x1 = side == "left" and 0 or math.min(x1, W - size * 3.5)
+    local zone_x2 = side == "left" and math.max(x1 + size, size * 3.5) or W
     local zone_y1 = osc_param.areas["showhide_wc"] and osc_param.areas["showhide_wc"][1].y2 or 0
     local zone_y2 = osc_param.areas["showhide"] and osc_param.areas["showhide"][1].y1 or bottom_y
     add_area("showhide_vol", zone_x1, zone_y1, zone_x2, zone_y2)
@@ -2648,6 +2671,7 @@ local SKIN_STYLES = {
     playlist_prev = "control_2", playlist_next = "control_2",
     chapter_prev = "control_2", chapter_next = "control_2",
     speed = "speed",
+    close = "window_control", maximize = "window_control", minimize = "window_control",
 }
 
 -- elements that only make sense in some situations
@@ -2658,6 +2682,9 @@ local function skin_item_allowed(id)
     if id == "playlist_prev" or id == "playlist_next" then return state.playlist_count > 1 end
     if id == "chapter_prev" or id == "chapter_next" then return #state.chapter_list > 0 end
     if id == "audio_track" then return state.audio_track_count > 0 end
+    if id == "close" or id == "maximize" or id == "minimize" then
+        return window_controls_enabled() and user_opts.window_controls
+    end
     return true
 end
 
@@ -2724,6 +2751,13 @@ local function resolve_skin(skin, W, H, editing)
             -- hover zones are not drawn on the bar, only in the editor
             entry.exists, entry.fits, entry.shown = true, true, true
             entry.visible = editing
+        elseif item.id == "volume" then
+            -- the volume widget: only its box, volume_layout() draws it there
+            entry.is_widget = true
+            entry.exists = elements["vol_slider"] ~= nil and user_opts.volume_widget ~= "no"
+            entry.fits = true
+            entry.shown = entry.exists and state.audio_track_count > 0 and not state.is_image
+            entry.visible = editing and entry.exists or entry.shown
         else
             entry.exists = element_names[item.id] ~= nil
             entry.fits = not item.hide_below or W >= item.hide_below
@@ -2732,8 +2766,8 @@ local function resolve_skin(skin, W, H, editing)
         end
         -- an item placed above the bar background lives on its own: it does not move with the bar
         -- and gets its own hover zone
-        entry.floating = not entry.is_zone and item.bottom >= skin.height
-        if not editing and not entry.visible and item.collapse and not entry.is_zone then
+        entry.floating = not entry.is_zone and not entry.is_widget and item.bottom >= skin.height
+        if not editing and not entry.visible and item.collapse and not entry.is_zone and not entry.is_widget then
             collapses[#collapses + 1] = {top = item.bottom + item.h, amount = item.collapse}
             lowered = lowered + item.collapse
         end
@@ -2759,7 +2793,7 @@ local function resolve_skin(skin, W, H, editing)
         entry.x1, entry.y1, entry.x2, entry.y2 = x1, y2 - item.h, math.max(x1, x2), y2
     end
     for _, entry in ipairs(list) do
-        if not entry.is_zone then entry.group = skin_item_group(skin, entry, list) end
+        if not entry.is_zone and not entry.is_widget then entry.group = skin_item_group(skin, entry, list) end
     end
 
     -- crowded items (narrow window): of two items with a priority that overlap or nearly touch,
@@ -2824,7 +2858,7 @@ local function skin_zones(skin, list, W, H, bar_h)
         end
     end
     for _, e in ipairs(list) do
-        if e.visible and not e.is_zone then
+        if e.visible and not e.is_zone and not e.is_widget then
             if e.group == "top" then
                 result.top_items[#result.top_items + 1] = rect_of(e)
             elseif own_by_id[e.group] then
@@ -2896,6 +2930,16 @@ local function apply_skin_item(id, lo, item)
     end
     if item.alpha then lo.alpha[1] = item.alpha end
     if element.type ~= "button" then return end
+    -- hover color (the "color" hover effect): item.hover = "theme" / "keep" (no change) / "#RRGGBB";
+    -- nil = auto: an item with its own color keeps it, the others take the theme color
+    local hover = item.hover or (item.color and "keep") or "theme"
+    if hover ~= "theme" and lo.button and lo.button.hoverstyle then
+        local style = (lo.button.hoverstyle:gsub("\\1?c&H%x+&", ""))
+        if hover ~= "keep" then
+            style = (style:gsub("^{", function () return "{\\1c&H" .. osc_color_convert(hover) .. "&" end, 1))
+        end
+        lo.button.hoverstyle = style
+    end
     if item.tooltip and item.tooltip ~= "" then element.tooltipF = item.tooltip end
     for button, command in pairs(item.actions or {}) do
         local events = SKIN_EVENTS[button]
@@ -3000,10 +3044,19 @@ layouts["skin"] = function ()
         return lo
     end
 
+    -- window controls as skin items (skin.wc_edited): hover colors as in window_controls()
+    local wc_hover = {close = user_opts.windowcontrols_close_hover, maximize = user_opts.windowcontrols_max_hover,
+                      minimize = user_opts.windowcontrols_min_hover}
+    local wc_size = hover_effects.size and
+        string.format("\\fscx%s\\fscy%s", user_opts.button_hover_size, user_opts.button_hover_size) or ""
+    local wc_left = W -- the window title is clipped before the leftmost of them in the top bar
+
     for _, e in ipairs(list) do
         local id = e.item.id
         if e.is_zone then
             -- a hover zone: no element
+        elseif e.is_widget then
+            if e.visible then osc_param.skin_volume = rect_of(e) end
         elseif e.visible then
             elements[id].visible = true
             local lo
@@ -3038,6 +3091,10 @@ layouts["skin"] = function ()
                 lo.style = id == "time_codes" and osc_styles.time or osc_styles.cache
             elseif id == "speed_ruler" then
                 lo = place(id, 5, e)
+            elseif e.item.custom and e.item.custom.kind == "plate" then
+                lo = place(id, 5, e)
+                lo.layer = 12
+                if not e.item.alpha then lo.alpha[1] = 64 end
             elseif e.item.custom then
                 -- editor-made object: an icon of the menu font, or text in the OSC font
                 lo = place(id, 5, e)
@@ -3049,7 +3106,11 @@ layouts["skin"] = function ()
                 lo = place(id, 5, e)
                 lo.style = osc_styles[SKIN_STYLES[id] or "control_3"]
             end
-            apply_skin_item(id, lo, e.item)
+            if wc_hover[id] then
+                lo.button.hoverstyle = "{\\c&H" .. osc_color_convert(wc_hover[id]) .. "&" .. wc_size .. "}"
+                if e.y1 < 50 then wc_left = math.min(wc_left, e.x1) end
+            end
+            apply_skin_item(id, lo, e.item) -- after the window buttons' hover style: item.hover changes it
             if e.group ~= "bottom" then lo.group = e.group end
             if e.item.bg then add_skin_shape(id, e) end
             if id == "seekbar" and skin.glow then add_seekbar_glow(e) end
@@ -3057,6 +3118,8 @@ layouts["skin"] = function ()
             elements[id].visible = false
         end
     end
+
+    if skin.wc_edited then osc_param.skin_wc = {left = wc_left} end
 
     if user_opts.persistent_progress or state.persistent_progress_toggle then
         local lo = add_layout("persistent_seekbar")
@@ -3935,9 +3998,11 @@ local function osc_init()
         value = math.max(0, math.min(volume_max(), math.floor(value + 0.5)))
         if value ~= state.volume then mp.commandv("set", "volume", value) end
     end
+    -- the track runs between the handle's centers at 0 and 100%: VOL_INSET from the hitbox ends
+    local VOL_INSET = 8
     local function volume_from_mouse(element)
         local _, mouse_y = get_virt_mouse_pos()
-        local y1, y2 = element.hitbox.y1, element.hitbox.y2
+        local y1, y2 = element.hitbox.y1 + VOL_INSET, element.hitbox.y2 - VOL_INSET
         set_volume_value((y2 - mouse_y) / (y2 - y1) * volume_max())
     end
 
@@ -3945,51 +4010,64 @@ local function osc_init()
     ne.enabled = state.audio_track_count > 0
     ne.draw = function (element, ass, anim)
         local x1, y1, x2, y2 = get_element_hitbox(element)
-        local w, h = x2 - x1, y2 - y1
-        local radius = math.min(8, w / 2)
+        local cx = (x1 + x2) / 2
         local vmax = volume_max()
         local volume = state.volume or 0
-        local fill_y = y2 - h * math.min(volume / vmax, 1)
+        local active = element.state.pressed or mouse_hit(element)
+        local card = element.layout.vol_card or {x1 = x1, y1 = y1, x2 = x2, y2 = y2}
+        local function circle(x, y, r)
+            ass:draw_start()
+            ass:round_rect_cw(x - r, y - r, x + r, y + r, r)
+            ass:draw_stop()
+        end
 
-        -- background
-        custom_layer(ass, element, anim, user_opts.osc_color, 0x55)
+        -- one glass capsule around the number, the track and the speaker button
+        custom_layer(ass, element, anim, user_opts.osc_color, 0x48)
         ass:draw_start()
-        ass:round_rect_cw(x1, y1, x2, y2, radius)
+        ass:round_rect_cw(card.x1, card.y1, card.x2, card.y2, math.min(18, (card.x2 - card.x1) / 2))
         ass:draw_stop()
 
-        -- fill (rounded bottom, flat top)
+        -- thin track like the seekbar, a bit thicker under the mouse
+        local tw = active and 8 or 6
+        local ty1, ty2 = y1 + VOL_INSET, y2 - VOL_INSET
+        local fill_y = ty2 - (ty2 - ty1) * math.min(volume / vmax, 1)
+        custom_layer(ass, element, anim, "#FFFFFF", 0xC8)
+        ass:draw_start()
+        ass:round_rect_cw(cx - tw / 2, ty1, cx + tw / 2, ty2, tw / 2)
+        ass:draw_stop()
         local fill_color = user_opts.volumebar_match_seek_color and user_opts.seekbarfg_color or user_opts.side_buttons_color
         if volume > 0 then
-            custom_layer(ass, element, anim, fill_color, state.mute and 0xA0 or 0,
-                string.format("\\clip(%f,%f,%f,%f)", x1, fill_y, x2, y2))
+            custom_layer(ass, element, anim, state.mute and "#8A8A8A" or fill_color, 0)
             ass:draw_start()
-            ass:round_rect_cw(x1, y1, x2, y2, radius)
+            ass:round_rect_cw(cx - tw / 2, fill_y, cx + tw / 2, ty2, tw / 2)
             ass:draw_stop()
         end
 
-        -- 100% marker when volume-max is above 100
+        -- 100% mark when volume-max is above 100
         if vmax > 100 then
-            local y100 = y2 - h * (100 / vmax)
-            local nub = math.max(3, math.floor(w * 0.18))
-            custom_layer(ass, element, anim, user_opts.seekbarfg_color, 0)
+            local y100 = ty2 - (ty2 - ty1) * (100 / vmax)
+            custom_layer(ass, element, anim, "#FFFFFF", 0x50)
             ass:draw_start()
-            ass:move_to(x1, y100 - nub)
-            ass:line_to(x1 + nub, y100)
-            ass:line_to(x1, y100 + nub)
-            ass:move_to(x2, y100 - nub)
-            ass:line_to(x2, y100 + nub)
-            ass:line_to(x2 - nub, y100)
+            ass:rect_cw(cx - tw / 2 - 5, y100 - 1, cx + tw / 2 + 5, y100 + 1)
             ass:draw_stop()
         end
 
-        -- value: dark over the fill, light over the background
+        -- handle in the seekbar handle colors (the skin's "Цвет кружка"), grey when muted
+        local r = active and 8 or 7
+        local border = user_opts.seek_handle_border_color
+        local inner = r
+        if border ~= "" and not state.mute then
+            custom_layer(ass, element, anim, border, 0)
+            circle(cx, fill_y, r)
+            inner = r - 2
+        end
+        custom_layer(ass, element, anim, state.mute and "#BBBBBB" or user_opts.seek_handle_color, 0)
+        circle(cx, fill_y, inner)
+
+        -- the value above the track: accent over 100%, dim when muted
         local text = tostring(math.floor(volume + 0.5))
-        local fs = math.floor(w * 0.4)
-        local ty = y2 - math.floor(w * 0.2)
-        custom_text(ass, element, anim, x1 + w / 2, ty, 2, text, fs, user_opts.osc_color,
-            string.format("\\bord0\\clip(%f,%f,%f,%f)", x1, fill_y, x2, y2))
-        custom_text(ass, element, anim, x1 + w / 2, ty, 2, text, fs, "#FFFFFF",
-            string.format("\\iclip(%f,%f,%f,%f)", x1, fill_y, x2, y2))
+        local color = state.mute and "#8A8A8A" or (volume > 100 and user_opts.seekbarfg_color or "#FFFFFF")
+        custom_text(ass, element, anim, cx, card.y1 + 15, 5, text, 14, color, "\\bord0")
 
         -- hint next to the slider
         if mouse_hit(element) and not element.state.pressed and user_opts.tooltip_hints then
@@ -4030,7 +4108,19 @@ local function osc_init()
     if user_opts.layout == "skin" then
         for _, item in ipairs(get_skin().items) do
             local custom = item.custom
-            if custom and item.id:match("^custom_") then
+            if custom and custom.kind == "plate" and item.id:match("^custom_") then
+                -- a rounded plate under other items (no clicks): color, transparency, corner radius
+                local radius, color = item.radius, item.color or "#121218"
+                ne = new_element(item.id, "custom")
+                ne.draw = function (element, ass, anim)
+                    local x1, y1, x2, y2 = get_element_hitbox(element)
+                    local r = math.min(radius or 1e9, (x2 - x1) / 2, (y2 - y1) / 2)
+                    custom_layer(ass, element, anim, color, 0)
+                    ass:draw_start()
+                    ass:round_rect_cw(x1, y1, x2, y2, r)
+                    ass:draw_stop()
+                end
+            elseif custom and item.id:match("^custom_") then
                 ne = new_element(item.id, "button")
                 ne.content = custom.kind == "text" and mp.command_native({"escape-ass", custom.text or ""})
                     or (custom.icon or "radio_button_unchecked")
@@ -4040,6 +4130,7 @@ local function osc_init()
 
     -- load layout
     osc_param.skin_zones, osc_param.skin_zone_override, osc_param.areas_strict = nil, nil, nil
+    osc_param.skin_wc, osc_param.skin_volume, osc_param.volume_rect = nil, nil, nil
     if state.is_image then
         layouts["modern-image"]()
     elseif layouts[user_opts.layout] then
@@ -4102,6 +4193,49 @@ local function hide_vol()
     hide_bar("vol", "vol_visible", "vol_anitype", vol_visible)
 end
 
+-- own hover zones of the skin fade like the bars, each on its own
+local zone_fade = {}
+function zone_fade.kill(id)
+    state.zone_anitype[id], state.zone_anistart[id], state.zone_animation[id] = nil, nil, nil
+end
+
+function zone_fade.show(id)
+    if not state.enabled or state.idle_active or state.menu_open then return end
+    state.zone_showtime[id] = mp.get_time()
+    if state.zone_anitype[id] == "out" then
+        -- came back while fading out: show at once
+        zone_fade.kill(id)
+        state.zone_visible[id] = true
+        request_tick()
+    elseif state.zone_visible[id] or state.zone_anitype[id] == "in" then
+        return
+    elseif user_opts.fadeduration > 0 and user_opts.fadein then
+        state.zone_anitype[id], state.zone_anistart[id] = "in", nil
+        request_tick()
+    else
+        state.zone_visible[id] = true
+        request_tick()
+    end
+end
+
+function zone_fade.hide(id)
+    if not state.zone_visible[id] or state.zone_anitype[id] == "out" then return end
+    if user_opts.fadeduration > 0 and state.enabled then
+        state.zone_anitype[id], state.zone_anistart[id] = "out", nil
+    else
+        zone_fade.kill(id)
+        state.zone_visible[id] = false
+    end
+    request_tick()
+end
+
+function zone_fade.hide_all()
+    for id in pairs(state.zone_visible) do zone_fade.hide(id) end
+    for id, a in pairs(state.zone_anitype) do
+        if a == "in" then zone_fade.kill(id) end
+    end
+end
+
 local function vol_dragging()
     local e = state.active_element and elements[state.active_element]
     return e and e.layout and e.layout.group == "vol"
@@ -4147,7 +4281,7 @@ local function mouse_leave()
             if not state.keeponpause_active then hide_osc() end
             hide_wc()
             hide_vol()
-            state.zone_visible = {}
+            zone_fade.hide_all()
             request_tick()
         end
     end
@@ -4277,6 +4411,8 @@ local function process_event(source, what)
                 if what == "down" then
                     state.active_element = n
                     state.active_event_source = source
+                    -- softrepeat goes by the clock, not by redraws (see render_elements)
+                    state.next_repeat_time = mp.get_time() + 0.5
                 end
                 -- fire the down or press event if the element has one
                 if element_has_action(elements[n], action) then
@@ -4303,6 +4439,7 @@ local function process_event(source, what)
         end
         state.active_element = nil
         state.mouse_down_counter = 0
+        state.next_repeat_time = nil
     elseif source == "mouse_move" then
         state.mouse_in_window = true
 
@@ -4345,11 +4482,15 @@ local function process_event(source, what)
         end
 
         -- own hover zones of the skin: their buttons show while the cursor is in the zone
-        -- (or on one of the buttons), they hide by the autohide timeout in render()
+        -- (or on one of the buttons) and hide as soon as it leaves, like the bar
+        -- (with deadzone_hide=timeout - by the autohide timeout in render())
+        local held = state.active_element and elements[state.active_element]
         for _, z in ipairs(osc_param.skin_zones or {}) do
-            if mouse_in_zone(z) and state.enabled then
-                state.zone_visible[z.id] = true
-                state.zone_showtime[z.id] = mp.get_time()
+            if mouse_in_zone(z) then
+                zone_fade.show(z.id)
+            elseif user_opts.visibility ~= "always" and user_opts.deadzone_hide ~= "timeout"
+                and not (held and held.layout and held.layout.group == z.id) then
+                zone_fade.hide(z.id)
             end
         end
 
@@ -4454,6 +4595,22 @@ local function render()
     run_fade("anitype",    "anistart",    "animation",    osc_visible)
     run_fade("wc_anitype", "wc_anistart", "wc_animation", wc_visible)
     run_fade("vol_anitype", "vol_anistart", "vol_animation", vol_visible)
+    for id, anitype in pairs(state.zone_anitype) do
+        state.zone_anistart[id] = state.zone_anistart[id] or now
+        local fadelen = user_opts.fadeduration / 1000
+        local start = state.zone_anistart[id]
+        if now < start + fadelen then
+            if anitype == "in" then
+                state.zone_visible[id] = true
+                state.zone_animation[id] = scale_value(start, start + fadelen, 255, 0, now)
+            else
+                state.zone_animation[id] = scale_value(start, start + fadelen, 0, 255, now)
+            end
+        else
+            state.zone_visible[id] = anitype == "in"
+            zone_fade.kill(id)
+        end
+    end
 
     --mouse show/hide area: mpv keeps one box per section, so it gets the box around all zones;
     -- the mouse_move handler checks the zones themselves
@@ -4575,7 +4732,7 @@ local function render()
                 if hide_timeout >= 0 then
                     local timeout = state.zone_showtime[z.id] + (hide_timeout / 1000) - now
                     if timeout <= 0 then
-                        state.zone_visible[z.id] = false
+                        zone_fade.hide(z.id)
                     else
                         if not state.hide_timer then state.hide_timer = mp.add_timeout(0, tick) end
                         if timeout < state.hide_timer.timeout then
@@ -4690,6 +4847,15 @@ tick = function()
     tick_animation("anitype",    "anistart",    "animation")
     tick_animation("wc_anitype", "wc_anistart", "wc_animation", window_controls_enabled())
     tick_animation("vol_anitype", "vol_anistart", "vol_animation")
+    for id in pairs(state.zone_anitype) do
+        local start = state.zone_anistart[id]
+        if not start or mp.get_time() < 1 + start + user_opts.fadeduration / 1000 then
+            request_tick()
+        else
+            state.zone_visible[id] = state.zone_anitype[id] == "in"
+            zone_fade.kill(id)
+        end
+    end
 end
 
 local function set_tick_delay(_, display_fps)
@@ -5178,12 +5344,14 @@ local function osc_suspend(suspend)
         end
         state.active_element = nil
         state.mouse_down_counter = 0
+        state.next_repeat_time = nil
         kill_animation("anitype", "anistart", "animation")
         kill_animation("wc_anitype", "wc_anistart", "wc_animation")
         kill_animation("vol_anitype", "vol_anistart", "vol_animation")
         osc_visible(false)
         wc_visible(false)
         vol_visible(false)
+        state.zone_visible, state.zone_anitype, state.zone_anistart, state.zone_animation = {}, {}, {}, {}
         for _, section in ipairs({"showhide", "showhide_wc", "showhide_vol", "input", "input_wheel", "input_mid",
                                   "window-controls", "window-controls-title", "window-controls-ontop"}) do
             mp.disable_key_bindings(section)
@@ -5236,6 +5404,18 @@ menus.init(menu, {
         local file = skins.new_file_name()
         local skin = skins.copy(get_skin())
         skin.name = display_name
+        skin.based_on = skin.based_on or user_opts.skin
+        local ok, err = skins.save(file, skin)
+        if ok then choose_skin(file, "skin") end
+        return ok, err
+    end,
+    -- a nearly empty skin to build from scratch in the editor: the seekbar and play
+    skin_empty = function (display_name)
+        local file = skins.new_file_name()
+        local skin = {name = display_name, height = 96, items = {
+            {id = "seekbar", anchor = "stretch", x = 24, r = 24, bottom = 52, h = 16},
+            {id = "play_pause", anchor = "center", x = -22.5, w = 45, bottom = 12, h = 28, priority = 10},
+        }}
         local ok, err = skins.save(file, skin)
         if ok then choose_skin(file, "skin") end
         return ok, err
@@ -5259,7 +5439,8 @@ local editor_restore = {}
 editor.init({
     get_skin = get_skin,
     set_skin = function (skin) current_skin = skin end,
-    default_skin = function () return skins.copy(skins.DEFAULT) end,
+    -- the original look of the skin being edited (its shipped copy, or the skin it was copied from)
+    default_skin = function () return skins.default(get_skin().based_on or user_opts.skin) end,
     copy = skins.copy,
     save = function (skin) return skins.save(user_opts.skin, skin) end,
     resolve = function (skin)
@@ -5284,6 +5465,25 @@ editor.init({
             end
         end
         return items
+    end,
+    -- the window buttons as skin items at their usual places (top right of the top bar)
+    window_controls = function () return window_controls_enabled() and user_opts.window_controls end,
+    -- the volume widget where it is now, as a skin item (nil when it is off)
+    default_volume_item = function ()
+        local r = osc_param.volume_rect
+        if not r or user_opts.volume_widget == "no" then return nil end
+        local W, H = osc_param.playresx, osc_param.playresy
+        local right = (r.x1 + r.x2) / 2 >= W / 2
+        return {id = "volume", anchor = right and "right" or "left", x = math.floor(right and r.x1 - W or r.x1),
+                w = math.floor(r.x2 - r.x1), bottom = math.floor(H - r.y2), h = math.floor(r.y2 - r.y1)}
+    end,
+    default_wc_items = function ()
+        local H = osc_param.playresy
+        return {
+            {id = "minimize", anchor = "right", x = -150, w = 50, bottom = H - 50, h = 50, show_in = "top"},
+            {id = "maximize", anchor = "right", x = -100, w = 50, bottom = H - 50, h = 50, show_in = "top"},
+            {id = "close", anchor = "right", x = -50, w = 50, bottom = H - 50, h = 50, show_in = "top"},
+        }
     end,
     relayout = request_init_resize,
     dims = function () return osc_param.playresx, osc_param.playresy end,
@@ -5631,7 +5831,8 @@ end
 
 apply_skin_look = function ()
     local skin = (user_opts.layout == "skin" and not state.is_image) and get_skin() or {}
-    local key = (skin.theme or "") .. "|" .. (skin.seekbar_height or "")
+    local key = table.concat({skin.theme or "", skin.seekbar_height or "",
+                              skin.handle_color or "", skin.handle_border_color or ""}, "|")
     if key == applied_look then return end
     applied_look = key
     for _, k in ipairs(LOOK_OPTS) do user_opts[k] = base_look[k] end
@@ -5640,6 +5841,11 @@ apply_skin_look = function ()
         apply_theme()
     end
     if skin.seekbar_height then user_opts.seekbar_height = skin.seekbar_height end
+    -- the seekbar handle may have its own colors, over the theme
+    if skin.handle_color then user_opts.seek_handle_color = skin.handle_color end
+    if skin.handle_border_color then
+        user_opts.seek_handle_border_color = skin.handle_border_color ~= "none" and skin.handle_border_color or ""
+    end
     set_osc_styles()
     menu.setup({accent = user_opts.seekbarfg_color, font = user_opts.font})
 end

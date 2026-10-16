@@ -1,0 +1,24 @@
+{
+  "name": "Терминал",
+  "height": 120,
+  "theme": "green",
+  "seekbar_height": "small",
+  "background": "capsule",
+  "bg_inset": 0,
+  "bg_radius": 0,
+  "bg_color": "#000000",
+  "bg_alpha": 48,
+  "items": [
+    {"id": "custom_1", "custom": {"kind": "text", "text": "prism@mpv:~$"}, "anchor": "left", "x": 20, "w": 160, "bottom": 90, "h": 22, "size": 17, "font": "Consolas", "color": "#33FF66"},
+    {"id": "title", "anchor": "stretch", "x": 186, "r": 20, "bottom": 90, "h": 22, "size": 17, "font": "Consolas"},
+    {"id": "seekbar", "anchor": "stretch", "x": 20, "r": 20, "bottom": 64, "h": 12},
+    {"id": "time_codes", "anchor": "left", "x": 20, "w": 130, "bottom": 24, "h": 18, "size": 17, "font": "Consolas", "color": "#33FF66"},
+    {"id": "jump_backward", "anchor": "center", "x": -76, "w": 28, "bottom": 20, "h": 24, "priority": 10, "color": "#33FF66"},
+    {"id": "play_pause", "anchor": "center", "x": -20, "w": 40, "bottom": 18, "h": 28, "priority": 10, "color": "#33FF66"},
+    {"id": "jump_forward", "anchor": "center", "x": 52, "w": 28, "bottom": 20, "h": 24, "priority": 10, "color": "#33FF66"},
+    {"id": "sub_track", "anchor": "right", "x": -184, "w": 24, "bottom": 20, "h": 24, "priority": 5, "color": "#33FF66"},
+    {"id": "playlist", "anchor": "right", "x": -144, "w": 24, "bottom": 20, "h": 24, "priority": 7, "color": "#33FF66"},
+    {"id": "pip", "anchor": "right", "x": -104, "w": 24, "bottom": 20, "h": 24, "priority": 8, "color": "#33FF66"},
+    {"id": "fullscreen", "anchor": "right", "x": -64, "w": 24, "bottom": 20, "h": 24, "priority": 9, "color": "#33FF66"}
+  ]
+}

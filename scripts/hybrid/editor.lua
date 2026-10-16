@@ -3,6 +3,7 @@
 -- Works on the skin table that layout=skin draws, so every change is visible at once.
 
 local M = {}
+local utils = require "mp.utils"
 local api                  -- functions from main.lua, see M.init()
 
 local overlay = mp.create_osd_overlay("ass-events")
@@ -19,6 +20,8 @@ local NAMES = {
     file_loop = "Повтор", playlist = "Плейлист", pip = "Картинка в картинке",
     fullscreen = "Полный экран", info = "Статистика", ontop = "Поверх окон",
     screenshot = "Скриншот", cache_info = "Кэш", download = "Скачать",
+    close = "Закрыть окно", maximize = "Развернуть окно", minimize = "Свернуть окно",
+    volume = "Регулятор громкости",
 }
 M.NAMES = NAMES
 
@@ -76,10 +79,12 @@ local BUILTIN = {
     "chapter_prev", "chapter_next", "menu", "sub_track", "audio_track", "time_codes",
     "title", "chapter_title", "seekbar", "speed_ruler", "speed", "shuffle", "file_loop",
     "playlist", "pip", "fullscreen", "info", "ontop", "screenshot", "cache_info",
+    "minimize", "maximize", "close",
 }
 
 local function item_name(item)
     if item.custom and item.custom.kind == "zone" then return "Зона «" .. (item.custom.name or item.id) .. "»" end
+    if item.custom and item.custom.kind == "plate" then return "Плашка" end
     if item.custom then
         if item.custom.kind == "text" then return "Надпись «" .. (item.custom.text or "") .. "»" end
         return item.tooltip or ("Кнопка «" .. icon_name(item.custom.icon) .. "»")
@@ -91,14 +96,14 @@ M.item_name = item_name
 
 local T = {
     save = "Сохранить", undo = "Шаг назад", create = "Создать объект", look = "Оформление", reset = "Как по умолчанию", exit = "Выйти",
-    hint = "Тащи мышкой, за уголок — размер · правый клик — свойства · стрелки — точно · Delete — убрать",
+    hint = "Тащи мышкой, за уголок — размер · правый клик — свойства (по пустому месту — создать) · стрелки — точно · Delete — убрать",
     height = "тёмная подложка",
     zone = "зона наведения",
     saved = "Скин сохранён",
     save_failed = "Не удалось сохранить: %s",
     unsaved = "Есть несохранённые изменения: «Сохранить» или ещё раз «Выйти» — выйти без сохранения",
     removed = "Убрано: %s (вернуть — «Шаг назад»)",
-    reset_done = "Вернул стандартную раскладку (не сохранено)",
+    reset_done = "Вернул исходный вид скина (не сохранено)",
     hidden = "не всегда виден",
 }
 
@@ -169,9 +174,23 @@ end
 -- a skin that never had its zones edited gets the standard zones as items, so they can be moved and deleted
 function M.with_zones(skin)
     if not skin.zones_edited then
+        -- until now every item showed with the bottom bar: keep it so, "by place" is for new objects
+        for _, item in ipairs(skin.items) do
+            if not item.show_in and not (item.custom and item.custom.kind == "zone") then item.show_in = "bottom" end
+        end
         for _, item in ipairs(api.default_zone_items(skin)) do skin.items[#skin.items + 1] = item end
         skin.zones_edited = true
     end
+    -- the window buttons too, when the top bar has them
+    if not skin.wc_edited and api.window_controls() then
+        for _, item in ipairs(api.default_wc_items()) do skin.items[#skin.items + 1] = item end
+        skin.wc_edited = true
+    end
+    -- the volume widget: without an item it stands at its usual place, so it is added there
+    local has_volume = false
+    for _, item in ipairs(skin.items) do has_volume = has_volume or item.id == "volume" end
+    local volume = not has_volume and api.default_volume_item()
+    if volume then skin.items[#skin.items + 1] = volume end
     return skin
 end
 
@@ -218,6 +237,223 @@ local function handles(e)
         {"bl", e.x1 - h / 2, e.y2 - h / 2, e.x1 + h / 2, e.y2 + h / 2},
         {"br", e.x2 - h / 2, e.y2 - h / 2, e.x2 + h / 2, e.y2 + h / 2},
     }
+end
+
+-- color picker: a window over the editor (grid of shades, grays, recent colors, own code) ---------
+
+local picker = {}
+
+-- hue 0..360, saturation and lightness 0..1 -> "#RRGGBB"
+local function hsl(h, s, l)
+    local c = (1 - math.abs(2 * l - 1)) * s
+    local x = c * (1 - math.abs((h / 60) % 2 - 1))
+    local m = l - c / 2
+    local r, g, b
+    if h < 60 then r, g, b = c, x, 0 elseif h < 120 then r, g, b = x, c, 0
+    elseif h < 180 then r, g, b = 0, c, x elseif h < 240 then r, g, b = 0, x, c
+    elseif h < 300 then r, g, b = x, 0, c else r, g, b = c, 0, x end
+    return string.format("#%02X%02X%02X", math.floor((r + m) * 255 + 0.5), math.floor((g + m) * 255 + 0.5),
+        math.floor((b + m) * 255 + 0.5))
+end
+
+-- hue 0..360, saturation and value (brightness) 0..1 -> "#RRGGBB"
+local function hsv(h, s, v)
+    local l = v * (1 - s / 2)
+    local sl = (l <= 0 or l >= 1) and 0 or (v - l) / math.min(l, 1 - l)
+    return hsl(h % 360, sl, l)
+end
+
+-- "#RRGGBB" -> hue, saturation, value
+local function to_hsv(hex)
+    local r = tonumber(hex:sub(2, 3), 16) / 255
+    local g = tonumber(hex:sub(4, 5), 16) / 255
+    local b = tonumber(hex:sub(6, 7), 16) / 255
+    local mx, mn = math.max(r, g, b), math.min(r, g, b)
+    local d = mx - mn
+    local h = 0
+    if d > 0 then
+        if mx == r then h = 60 * (((g - b) / d) % 6)
+        elseif mx == g then h = 60 * ((b - r) / d + 2)
+        else h = 60 * ((r - g) / d + 4) end
+    end
+    return h, mx == 0 and 0 or d / mx, mx
+end
+
+-- a filled polygon; seam = also an outline of the same color (no hairlines between wheel sectors)
+local function poly(ass, pts, color, seam)
+    local parts = {}
+    for i, pt in ipairs(pts) do parts[#parts + 1] = string.format("%s %.1f %.1f", i == 1 and "m" or "l", pt[1], pt[2]) end
+    local c = bgr(color)
+    ass[#ass + 1] = string.format("{\\an7\\pos(0,0)\\bord%s\\shad0\\blur0\\1c&H%s&\\3c&H%s&\\1a&H00&\\p1}%s{\\p0}",
+        seam and "0.6" or "0", c, c, table.concat(parts, " "))
+end
+
+-- a ring around a point (the chosen spot on the wheel)
+local function marker(ass, x, y, r)
+    local pts = {}
+    for i = 0, 15 do
+        local a = i * math.pi / 8
+        pts[#pts + 1] = string.format("%s %.1f %.1f", i == 0 and "m" or "l", x + r * math.cos(a), y + r * math.sin(a))
+    end
+    ass[#ass + 1] = string.format("{\\an7\\pos(0,0)\\bord2\\shad0\\blur0\\3c&HFFFFFF&\\1a&HFF&\\p1}%s{\\p0}",
+        table.concat(pts, " "))
+end
+
+local WHEEL_SECTORS, WHEEL_RINGS = 36, 6
+
+local PICKER_LIGHT = {0.85, 0.72, 0.6, 0.48, 0.36, 0.24}
+local PICKER_GRID = {}
+for row, l in ipairs(PICKER_LIGHT) do
+    PICKER_GRID[row] = {}
+    for col = 1, 12 do PICKER_GRID[row][col] = hsl((col - 1) * 30, 0.8, l) end
+end
+PICKER_GRID[#PICKER_LIGHT + 1] = {}
+for col = 1, 12 do
+    local v = math.floor(255 * (1 - (col - 1) / 11) + 0.5)
+    PICKER_GRID[#PICKER_LIGHT + 1][col] = string.format("#%02X%02X%02X", v, v, v)
+end
+
+local function is_hex(v) return type(v) == "string" and v:match("^#%x%x%x%x%x%x$") ~= nil end
+
+-- name of a non-color choice ("Как в теме", "Нет"...) by its value
+local function find_extra(extras, value)
+    for _, e in ipairs(extras) do
+        if e[2] == value then return e[1] end
+    end
+    return tostring(value)
+end
+
+picker.recent = {}
+
+function picker.draw(ass, W, H)
+    local p = ed.picker
+    local accent = api.accent()
+    -- taller when there are many buttons on the right ("Ввести код…", extras, "Готово", "Отмена")
+    local pw, ph = 540, math.max(340, 40 + 116 + (3 + #p.extras) * 34 + 12)
+    local x0, y0 = math.floor((W - pw) / 2), math.floor((H - ph) / 2)
+    local regions = {}
+    local function region(kind, value, x1, y1, x2, y2)
+        regions[#regions + 1] = {kind = kind, value = value, x1 = x1, y1 = y1, x2 = x2, y2 = y2}
+    end
+    fill(ass, 0, 0, W, H, "#000000", 0xA0)
+    fill(ass, x0, y0, x0 + pw, y0 + ph, "#18181E", 0x08)
+    text(ass, x0 + 16, y0 + 20, 4, p.title, 16)
+
+    local cs, step = 26, 29
+    local gx, gy = x0 + 16, y0 + 40
+
+    -- "Круг / Сетка" switch
+    local wheel_mode = picker.mode ~= "grid"
+    for i, m in ipairs({{"wheel", "Круг"}, {"grid", "Сетка"}}) do
+        local tx1 = gx + 12 * step - 3 - (3 - i) * 64
+        local on = (m[1] == "wheel") == wheel_mode
+        fill(ass, tx1, y0 + 9, tx1 + 60, y0 + 31, on and accent or (p.hover == "mode" .. m[1] and "#5A5A66" or "#303036"), 0x10)
+        text(ass, tx1 + 30, y0 + 20, 5, m[2], 13)
+        region("mode", m[1], tx1, y0 + 9, tx1 + 60, y0 + 31)
+    end
+
+    local function square(color, x, y, kind)
+        fill(ass, x, y, x + cs, y + cs, color, 0)
+        if color == p.value then frame(ass, x - 2, y - 2, x + cs + 2, y + cs + 2, "#FFFFFF", 0, 2)
+        elseif p.hover == color then frame(ass, x - 1, y - 1, x + cs + 1, y + cs + 1, "#FFFFFF", 0x40, 1) end
+        region(kind, color, x, y, x + cs, y + cs)
+    end
+    if wheel_mode then
+        -- the wheel: hue around, saturation from the center out, at the brightness of the slider
+        local R = 84
+        local cx, cy = gx + 88, gy + 86
+        for k = 1, WHEEL_RINGS do
+            local r1, r2 = R * (k - 1) / WHEEL_RINGS, R * k / WHEEL_RINGS
+            local sat = (k - 0.5) / WHEEL_RINGS
+            for i = 0, WHEEL_SECTORS - 1 do
+                local hue = i * 360 / WHEEL_SECTORS
+                local half = 180 / WHEEL_SECTORS
+                local pts = {}
+                for _, a in ipairs({hue - half, hue, hue + half}) do
+                    local rad = math.rad(a)
+                    pts[#pts + 1] = {cx + r2 * math.cos(rad), cy - r2 * math.sin(rad)}
+                end
+                if r1 > 0 then
+                    for _, a in ipairs({hue + half, hue - half}) do
+                        local rad = math.rad(a)
+                        pts[#pts + 1] = {cx + r1 * math.cos(rad), cy - r1 * math.sin(rad)}
+                    end
+                else
+                    pts[#pts + 1] = {cx, cy}
+                end
+                poly(ass, pts, hsv(hue, sat, p.v), true)
+            end
+        end
+        local mr = math.rad(p.h)
+        marker(ass, cx + p.s * R * math.cos(mr), cy - p.s * R * math.sin(mr), 6)
+        region("wheel", nil, cx - R - 4, cy - R - 4, cx + R + 4, cy + R + 4)
+        p.wheel = {cx = cx, cy = cy, R = R}
+
+        -- brightness slider
+        local sx1, sy1, sx2, sy2 = gx + 196, gy, gx + 220, gy + 172
+        local bands = 24
+        for i = 0, bands - 1 do
+            local y1 = sy1 + (sy2 - sy1) * i / bands
+            fill(ass, sx1, y1, sx2, y1 + (sy2 - sy1) / bands + 0.5, hsv(p.h, p.s, 1 - (i + 0.5) / bands), 0)
+        end
+        local my = sy1 + (1 - p.v) * (sy2 - sy1)
+        frame(ass, sx1 - 3, my - 3, sx2 + 3, my + 3, "#FFFFFF", 0, 2)
+        region("slider", nil, sx1 - 6, sy1 - 6, sx2 + 6, sy2 + 6)
+        p.slider = {y1 = sy1, y2 = sy2}
+        text(ass, gx + 234, gy + 20, 4, "Круг — оттенок", 12, "#BBBBBB")
+        text(ass, gx + 234, gy + 38, 4, "и насыщенность", 12, "#BBBBBB")
+        text(ass, gx + 234, gy + 62, 4, "Полоска — яркость", 12, "#BBBBBB")
+        text(ass, gx + 234, gy + 86, 4, "Можно тянуть", 12, "#BBBBBB")
+        text(ass, gx + 234, gy + 104, 4, "мышкой", 12, "#BBBBBB")
+        -- grays under the wheel, as in the grid
+        for col, color in ipairs(PICKER_GRID[#PICKER_GRID]) do
+            square(color, gx + (col - 1) * step, gy + 6 * step + 6, "color")
+        end
+    else
+        -- the grid: 12 hues x 6 shades, then grays; a square of the chosen color gets a white frame
+        for row, colors in ipairs(PICKER_GRID) do
+            for col, color in ipairs(colors) do
+                square(color, gx + (col - 1) * step, gy + (row - 1) * step + (row == #PICKER_GRID and 6 or 0), "color")
+            end
+        end
+    end
+    local ry = gy + #PICKER_GRID * step + 18
+    text(ass, gx, ry, 4, #picker.recent > 0 and "Последние цвета" or "Последние цвета появятся здесь", 13, "#BBBBBB")
+    for i, color in ipairs(picker.recent) do
+        square(color, gx + (i - 1) * step, ry + 12, "color")
+    end
+
+    -- right column: big sample, code, buttons
+    local rx, rw = gx + 12 * step + 14, pw - 12 * step - 46
+    if is_hex(p.value) then
+        fill(ass, rx, gy, rx + rw, gy + 80, p.value, 0)
+    else
+        fill(ass, rx, gy, rx + rw, gy + 80, "#303036", 0)
+    end
+    frame(ass, rx, gy, rx + rw, gy + 80, "#FFFFFF", 0x80, 1)
+    local name = is_hex(p.value) and p.value or find_extra(p.extras, p.value)
+    text(ass, rx + rw / 2, gy + 98, 5, name, 14)
+    local buttons = {{"code", "Ввести код…"}}
+    for i, e in ipairs(p.extras) do buttons[#buttons + 1] = {"extra", e[1], i} end
+    buttons[#buttons + 1] = {"done", "Готово"}
+    buttons[#buttons + 1] = {"cancel", "Отмена"}
+    local by = gy + 116
+    for _, b in ipairs(buttons) do
+        local active = b[1] == "extra" and p.extras[b[3]][2] == p.value
+        local hovered = p.hover == b[1] .. (b[3] or "")
+        local color = b[1] == "done" and accent or (active and "#505060" or "#303036")
+        fill(ass, rx, by, rx + rw, by + 28, hovered and "#5A5A66" or color, 0x10)
+        text(ass, rx + rw / 2, by + 14, 5, b[2], 13)
+        region(b[1], b[3], rx, by, rx + rw, by + 28)
+        by = by + 34
+    end
+    p.regions = regions
+end
+
+function picker.hit(x, y)
+    for _, r in ipairs(ed.picker.regions or {}) do
+        if inside(x, y, r.x1, r.y1, r.x2, r.y2) then return r end
+    end
 end
 
 local function height_handle(W, H)
@@ -282,27 +518,34 @@ function M.render()
         text(ass, math.max(10, math.min(sel.x1, W - 300)), ly, 1, label, 14, accent)
     end
 
-    -- toolbar
-    local buttons = {
-        {"save", T.save, ed.dirty}, {"undo", T.undo, #ed.undo > 0}, {"create", T.create, true},
-        {"look", T.look, true}, {"reset", T.reset, true}, {"exit", T.exit, true},
-    }
-    local gap, bh = 8, 30
-    local bw = math.min(150, math.floor((W - 40 - (#buttons - 1) * gap) / #buttons))
-    local total = #buttons * bw + (#buttons - 1) * gap
-    local x = (W - total) / 2
+    -- toolbar: at the top or in the middle of the window ("⇅"); hidden while an object is dragged
+    -- and while a menu or the color picker is open (it must not cover them)
     ed.buttons = {}
-    fill(ass, x - 10, 6, x + total + 10, 6 + bh + 34, "#000000", 0x50)
-    for _, b in ipairs(buttons) do
-        local x1, y1, x2, y2 = x, 12, x + bw, 12 + bh
-        local hovered = ed.hover == b[1]
-        local color = (b[1] == "save" and b[3]) and accent or "#303030"
-        fill(ass, x1, y1, x2, y2, hovered and "#505050" or color, b[3] and 0x10 or 0x80)
-        text(ass, (x1 + x2) / 2, (y1 + y2) / 2, 5, b[2], 14, b[3] and "#FFFFFF" or "#9A9A9A")
-        ed.buttons[#ed.buttons + 1] = {id = b[1], x1 = x1, y1 = y1, x2 = x2, y2 = y2, enabled = b[3]}
-        x = x2 + gap
+    if not ed.drag and not ed.menu_open and not ed.picker then
+        local buttons = {
+            {"save", T.save, ed.dirty}, {"undo", T.undo, #ed.undo > 0}, {"create", T.create, true},
+            {"look", T.look, true}, {"reset", T.reset, true}, {"exit", T.exit, true},
+        }
+        local gap, bh, mw = 8, 30, 36 -- mw: width of the "⇅" button
+        local bw = math.min(150, math.floor((W - 40 - mw - #buttons * gap) / #buttons))
+        local total = #buttons * bw + #buttons * gap + mw
+        local x = (W - total) / 2
+        local top = M.toolbar_mid and math.floor(H / 2 - (bh + 34) / 2) or 6
+        buttons[#buttons + 1] = {"move", "⇅", true, mw}
+        fill(ass, x - 10, top, x + total + 10, top + bh + 34, "#000000", 0x50)
+        for _, b in ipairs(buttons) do
+            local x1, y1, x2, y2 = x, top + 6, x + (b[4] or bw), top + 6 + bh
+            local hovered = ed.hover == b[1]
+            local color = (b[1] == "save" and b[3]) and accent or "#303030"
+            fill(ass, x1, y1, x2, y2, hovered and "#505050" or color, b[3] and 0x10 or 0x80)
+            text(ass, (x1 + x2) / 2, (y1 + y2) / 2, 5, b[2], b[1] == "move" and 18 or 14, b[3] and "#FFFFFF" or "#9A9A9A")
+            ed.buttons[#ed.buttons + 1] = {id = b[1], x1 = x1, y1 = y1, x2 = x2, y2 = y2, enabled = b[3]}
+            x = x2 + gap
+        end
+        text(ass, W / 2, top + 6 + bh + 15, 5, ed.toast or T.hint, 12, ed.toast and accent or "#DDDDDD")
     end
-    text(ass, W / 2, 12 + bh + 15, 5, ed.toast or T.hint, 12, ed.toast and accent or "#DDDDDD")
+
+    if ed.picker then picker.draw(ass, W, H) end
 
     overlay.data = table.concat(ass, "\n")
     overlay:update()
@@ -366,6 +609,14 @@ local function apply_drag(x, y)
         item.x = round(s.x + dx)
         if item.anchor == "stretch" then item.r = round(s.r - dx) end
         item.bottom = round(s.bottom - dy)
+        -- the volume widget takes its hover zone along
+        local zone = d.zone_index and ed.skin.items[d.zone_index]
+        if zone then
+            local zs = d.zone_start
+            zone.x = round(zs.x + dx)
+            if zone.anchor == "stretch" then zone.r = round(zs.r - dx) end
+            zone.bottom = round(zs.bottom - dy)
+        end
     else
         local corner = d.mode
         if corner:find("r") then
@@ -402,6 +653,11 @@ end
 local function remove_selected()
     local item = ed.selected and ed.skin.items[ed.selected]
     if not item then return end
+    if item.id == "volume" then
+        toast("Регулятор громкости не убирается: выключить его — volume_widget=no в hybrid.conf", 5)
+        M.render()
+        return
+    end
     push_undo()
     table.remove(ed.skin.items, ed.selected)
     -- buttons of a deleted zone go back to the bottom bar
@@ -448,9 +704,16 @@ local function press_button(id)
         M.open_create()
     elseif id == "look" then
         M.open_look()
+    elseif id == "move" then
+        -- the toolbar goes to the middle of the window and back (stays so until mpv closes)
+        M.toolbar_mid = not M.toolbar_mid
+        M.render()
     elseif id == "reset" then
         push_undo()
+        -- back to the original of this skin; its name and origin stay
+        local name, based_on = ed.skin.name, ed.skin.based_on
         ed.skin = M.with_zones(api.default_skin())
+        ed.skin.name, ed.skin.based_on = name, based_on
         ed.selected = nil
         relayout()
         toast(T.reset_done)
@@ -468,7 +731,7 @@ end
 
 -- properties menu -------------------------------------------------------------------------
 
-local look_menu
+local look_menu, skin_choice, look_color, create_menu, open_properties
 
 -- what a button can do; command nil = what the element does by itself
 local ACTIONS = {
@@ -585,6 +848,176 @@ local function choice_list(title, list, current, index, apply)
     end
 end
 
+-- "#33ff66", "33FF66" -> "#33FF66"; nil when it is not a color code
+local function parse_color(text)
+    text = (text or ""):gsub("%s", "")
+    if text:sub(1, 1) ~= "#" then text = "#" .. text end
+    return text:match("^#%x%x%x%x%x%x$") and text:upper() or nil
+end
+
+-- color picker logic ---------------------------------------------------------------------
+
+local RECENT_PATH = mp.command_native({"expand-path", "~~state/hybrid-colors.json"})
+
+local function load_recent()
+    local file = io.open(RECENT_PATH, "r")
+    if not file then return end
+    local data = utils.parse_json(file:read("*a") or "")
+    file:close()
+    picker.recent = {}
+    if type(data) == "table" and (data.mode == "grid" or data.mode == "wheel") then picker.mode = data.mode end
+    for _, c in ipairs(type(data) == "table" and type(data.recent) == "table" and data.recent or {}) do
+        if is_hex(c) and #picker.recent < 12 then picker.recent[#picker.recent + 1] = c end
+    end
+end
+
+local function save_colors()
+    local file = io.open(RECENT_PATH, "w")
+    if file then
+        file:write(utils.format_json({recent = picker.recent, mode = picker.mode or "wheel"}))
+        file:close()
+    end
+end
+
+local function remember_color(color)
+    if not is_hex(color) then return end
+    local list = {color}
+    for _, c in ipairs(picker.recent) do
+        if c ~= color and #list < 12 then list[#list + 1] = c end
+    end
+    picker.recent = list
+    save_colors()
+end
+
+-- the wheel follows a color chosen elsewhere (grid, recent, code); grays keep the hue
+local function sync_hsv(p, value)
+    if not is_hex(value) then return end
+    local h, sat, v = to_hsv(value)
+    if sat > 0 then p.h = h end
+    p.s, p.v = sat, v
+end
+
+-- spec: title, value (current), extras = {{name, value}} for choices that are not a color,
+-- apply(value) changes ed.skin (no undo step), back() reopens the menu it came from
+function picker.open(spec)
+    load_recent()
+    spec.dirty_before, spec.confirm_before = ed.dirty, ed.confirm_exit
+    spec.h, spec.s, spec.v = 0, 0, 1
+    sync_hsv(spec, spec.value)
+    ed.picker = spec
+    M.render()
+end
+
+-- every pick shows at once on the element; the whole picking is one undo step
+function picker.choose(value, from_wheel)
+    local p = ed.picker
+    if not from_wheel then sync_hsv(p, value) end
+    if not p.pushed then
+        push_undo()
+        p.pushed = true
+    end
+    p.value = value
+    p.apply(value)
+    relayout()
+    M.render()
+end
+
+local function picker_close()
+    local p = ed.picker
+    ed.picker = nil
+    picker.dragging = nil
+    M.render()
+    if p.back then p.back() end
+end
+
+function picker.done()
+    remember_color(ed.picker.value)
+    picker_close()
+end
+
+function picker.cancel()
+    local p = ed.picker
+    if p.pushed then
+        ed.skin = table.remove(ed.undo)
+        ed.dirty, ed.confirm_exit = p.dirty_before, p.confirm_before
+        relayout()
+    end
+    picker_close()
+end
+
+function picker.click(x, y)
+    local r = picker.hit(x, y)
+    if not r then return end
+    if r.kind == "wheel" then
+        local w = ed.picker.wheel
+        local dx, dy = x - w.cx, y - w.cy
+        if dx * dx + dy * dy > (w.R + 4) ^ 2 then return end -- a corner of the box, not the wheel
+        picker.dragging = "wheel"
+        picker.drag(x, y)
+    elseif r.kind == "slider" then
+        picker.dragging = "slider"
+        picker.drag(x, y)
+    elseif r.kind == "mode" then
+        picker.mode = r.value
+        save_colors()
+        M.render()
+    elseif r.kind == "color" then picker.choose(r.value)
+    elseif r.kind == "extra" then picker.choose(ed.picker.extras[r.value][2])
+    elseif r.kind == "done" then picker.done()
+    elseif r.kind == "cancel" then picker.cancel()
+    elseif r.kind == "code" then
+        ask_text("Цвет (код вида #33FF66):", is_hex(ed.picker.value) and ed.picker.value or "#", function (text)
+            if not ed or not ed.picker then return end
+            local color = parse_color(text)
+            if not color then
+                toast("Не понял цвет: нужен код вида #33FF66", 4)
+                M.render()
+                return
+            end
+            picker.choose(color)
+        end)
+    end
+end
+
+-- dragging on the wheel (hue, saturation) or the slider (brightness)
+function picker.drag(x, y)
+    local p = ed.picker
+    if picker.dragging == "wheel" then
+        local w = p.wheel
+        local dx, dy = x - w.cx, y - w.cy
+        p.h = math.deg(math.atan2(-dy, dx)) % 360
+        p.s = math.min(1, math.sqrt(dx * dx + dy * dy) / w.R)
+    elseif picker.dragging == "slider" then
+        p.v = math.max(0, math.min(1, 1 - (y - p.slider.y1) / (p.slider.y2 - p.slider.y1)))
+    else
+        return
+    end
+    picker.choose(hsv(p.h, p.s, p.v), true)
+end
+
+-- non-color entries of a choice list ("Как в теме", "Нет", "Круг цвета темы"...)
+local function extras_of(list)
+    local extras = {}
+    for _, entry in ipairs(list) do
+        if not is_hex(entry[2]) then extras[#extras + 1] = entry end
+    end
+    return extras
+end
+
+-- a menu action that opens the color picker for a skin item; back to its properties afterwards
+local function color_list(title, list, current, index, apply)
+    return function ()
+        picker.open({
+            title = title, value = current(), extras = extras_of(list),
+            apply = function (v)
+                local it = ed.skin.items[index]
+                if it then apply(it, v) end
+            end,
+            back = function () open_properties(index) end,
+        })
+    end
+end
+
 local function actions_for(index, button, label)
     return function ()
         local item = ed.skin.items[index]
@@ -644,7 +1077,14 @@ local function properties(index)
         local items = {}
         local function add(entry) items[#items + 1] = entry end
 
-        if is_zone(item) then
+        if item.id == "volume" then
+            -- the volume widget: only its place and size (its look comes from hybrid.conf)
+            add({title = "Ширина — толщина регулятора, высота — его длина", icon = "info", action = function () return "keep" end})
+        elseif is_zone(item) then
+            -- a zone covers a lot of the window: objects can be created on it from here
+            if ed.right_at then
+                add({title = "Создать здесь…", icon = "add", submenu = create_menu(ed.right_at)})
+            end
             add({title = "Название", icon = "edit", hint = item.custom.name, action = function ()
                 ask_text("Название зоны:", item.custom.name, function (text)
                     if text == "" then return end
@@ -673,17 +1113,31 @@ local function properties(index)
                 add({title = "Что делает", icon = "touch_app", hint = count > 0 and ("изменено: " .. count) or "как обычно",
                      submenu = actions_menu(index)})
             end
-            if is_button then
+            local is_text = item.custom and item.custom.kind == "text"
+            local is_plate = item.custom and item.custom.kind == "plate"
+            local is_icon = is_button and not is_text -- an icon button (built-in or own)
+            if is_icon then
                 local shapes = {{"Нет", "none"}, {"Круг цвета темы", "accent"}, {"Белый круг", "#FFFFFF"},
-                                {"Тёмный круг", "#121218"}}
+                                {"Тёмный круг", "#121218"}, {"Чёрный круг", "#000000"}}
                 local function shape_of(it) return it.bg and (it.bg_color or "accent") or "none" end
-                add({title = "Фон кнопки", icon = "circle", hint = find_name(shapes, shape_of(item)),
-                     submenu = choice_list("Фон кнопки", shapes, function () return shape_of(ed.skin.items[index]) end, index,
+                add({title = "Фон кнопки", icon = "circle", hint = find_name(shapes, shape_of(item), shape_of(item)),
+                     action = color_list("Фон кнопки", shapes, function () return shape_of(ed.skin.items[index]) end, index,
                          function (it, v)
                              it.bg = v ~= "none" and "circle" or nil
                              it.bg_color = (v ~= "none" and v ~= "accent") and v or nil
                          end)})
-            elseif item.id ~= "seekbar" and item.id ~= "speed_ruler" then
+                if item.bg then
+                    add({title = "Прозрачность фона", icon = "opacity", hint = find_name(ALPHAS, item.bg_alpha),
+                         submenu = choice_list("Прозрачность фона", ALPHAS, function () return ed.skin.items[index].bg_alpha end,
+                             index, function (it, v) it.bg_alpha = v end)})
+                end
+            elseif is_plate then
+                local radii = {{"Круглые края", nil}, {"Без скругления", 0}, {"8 px", 8}, {"16 px", 16}, {"24 px", 24}}
+                add({title = "Скругление", icon = "rounded_corner", hint = find_name(radii, item.radius, item.radius and (item.radius .. " px")),
+                     submenu = choice_list("Скругление", radii, function () return ed.skin.items[index].radius end, index,
+                         function (it, v) it.radius = v end)})
+            end
+            if (is_text or not is_button) and not is_plate and item.id ~= "seekbar" and item.id ~= "speed_ruler" then
                 local fonts = {{"Как в теме", nil}, {"Моноширинный (Consolas)", "Consolas"}, {"Bahnschrift", "Bahnschrift"},
                                {"Segoe UI Light", "Segoe UI Light"}, {"Segoe UI Semibold", "Segoe UI Semibold"}}
                 add({title = "Шрифт", icon = "font_download", hint = find_name(fonts, item.font, item.font),
@@ -691,17 +1145,38 @@ local function properties(index)
                          function (it, v) it.font = v end)})
             end
             if item.id ~= "speed_ruler" then
-                local sizes = {{"Как в теме", nil}}
-                for _, s in ipairs({12, 14, 16, 18, 20, 22, 24, 28, 32, 36, 40, 48}) do sizes[#sizes + 1] = {s .. " px", s} end
-                add({title = is_button and "Размер иконки" or "Размер текста", icon = "format_size",
-                     hint = item.size and (item.size .. " px") or "как в теме",
-                     submenu = choice_list("Размер", sizes, function () return ed.skin.items[index].size end, index,
-                         function (it, v) it.size = v end)})
+                if not is_plate then
+                    local sizes = {{"Как в теме", nil}}
+                    for _, s in ipairs({12, 14, 16, 18, 20, 22, 24, 28, 32, 36, 40, 48, 56, 64}) do sizes[#sizes + 1] = {s .. " px", s} end
+                    add({title = is_icon and "Размер иконки" or "Размер текста", icon = "format_size",
+                         hint = item.size and (item.size .. " px") or "как в теме",
+                         submenu = choice_list("Размер", sizes, function () return ed.skin.items[index].size end, index,
+                             function (it, v) it.size = v end)})
+                end
                 local colors = {{"Как в теме", nil}}
                 for _, c in ipairs(COLORS) do colors[#colors + 1] = c end
                 add({title = "Цвет", icon = "palette", hint = find_name(colors, item.color, item.color),
-                     submenu = choice_list("Цвет", colors, function () return ed.skin.items[index].color end, index,
+                     action = color_list("Цвет", colors, function () return ed.skin.items[index].color end, index,
                          function (it, v) it.color = v end)})
+                if is_button then
+                    -- color under the mouse (the theme color by default, an own color stays)
+                    local hovers = {{"Авто", nil}, {"Цвет темы", "theme"}, {"Не менять", "keep"}}
+                    local auto = item.color and "авто: не менять" or "авто: цвет темы"
+                    add({title = "Цвет при наведении", icon = "ads_click",
+                         hint = item.hover and find_name(hovers, item.hover, item.hover) or auto,
+                         action = color_list("Цвет при наведении", hovers, function () return ed.skin.items[index].hover end,
+                             index, function (it, v) it.hover = v end)})
+                end
+            end
+            if item.id == "seekbar" then
+                -- the handle colors belong to the whole skin (same as in "Оформление")
+                local function look_entry(title, icon, key)
+                    local hint = ed.skin[key] == "none" and "без обводки" or ed.skin[key] or "как в теме"
+                    add({title = title, icon = icon, hint = hint,
+                         action = look_color(title, key, function () open_properties(index) end)})
+                end
+                look_entry("Цвет кружка", "radio_button_checked", "handle_color")
+                look_entry("Обводка кружка", "trip_origin", "handle_border_color")
             end
             add({title = "Прозрачность", icon = "opacity", hint = find_name(ALPHAS, item.alpha),
                  submenu = choice_list("Прозрачность", ALPHAS, function () return ed.skin.items[index].alpha end, index,
@@ -786,17 +1261,33 @@ local function new_custom_id()
     return "custom_" .. n
 end
 
--- new objects appear above the middle of the bar, then the user drags them
-local function add_item(item)
+-- new objects appear in the middle of the window (at = {x, y}: centered under the cursor),
+-- then the user drags them
+local function add_item(item, at)
     push_undo()
     item.h = item.h or 24
+    local W, H = api.dims()
+    if at then
+        local w = item.w or 24
+        local cx = math.max(w / 2, math.min(W - w / 2, at.x))
+        local cy = math.max(item.h / 2, math.min(H - item.h / 2, at.y))
+        if item.anchor ~= "stretch" then
+            item.anchor, item.x = "left", round(cx - w / 2)
+        end
+        item.bottom = round(H - cy - item.h / 2)
+        ed.skin.items[#ed.skin.items + 1] = item
+        ed.selected = #ed.skin.items
+        reanchor(ed.selected)
+        relayout()
+        toast("Создано: " .. item_name(item) .. " — перетащи, если нужно, правый клик — свойства", 5)
+        return
+    end
     if not item.anchor then
         item.anchor = "center"
         item.x = -math.floor((item.w or 24) / 2)
         -- go up until the spot is free, so new objects do not pile on each other
-        local W, H = api.dims()
         local x1, x2 = W / 2 + item.x, W / 2 + item.x + (item.w or 24)
-        local bottom = 70
+        local bottom = math.floor(H / 2 - item.h / 2)
         for _ = 1, 12 do
             local y2 = H - bottom
             local y1 = y2 - item.h
@@ -818,7 +1309,8 @@ local function add_item(item)
     toast("Создано: " .. item_name(item) .. " — перетащи на место, правый клик — свойства", 5)
 end
 
-local function create_menu()
+-- at = {x, y}: "Создать здесь…" by a right click, the object goes under the cursor
+create_menu = function (at)
     return function ()
         local items = {}
         items[#items + 1] = {title = "Готовая кнопка", icon = "smart_button", submenu = function ()
@@ -826,7 +1318,7 @@ local function create_menu()
             for _, p in ipairs(PRESETS) do
                 list[#list + 1] = {title = p[1], icon = p[2], action = function ()
                     add_item({id = new_custom_id(), custom = {kind = "button", icon = p[2]},
-                        w = 24, h = 24, tooltip = p[1], actions = {left = p[3]}})
+                        w = 24, h = 24, tooltip = p[1], actions = {left = p[3]}}, at)
                 end}
             end
             return {title = "Готовая кнопка", items = list}
@@ -835,7 +1327,7 @@ local function create_menu()
             local list = {}
             for _, i in ipairs(ICONS) do
                 list[#list + 1] = {title = i[2], icon = i[1], action = function ()
-                    add_item({id = new_custom_id(), custom = {kind = "button", icon = i[1]}, w = 24, h = 24})
+                    add_item({id = new_custom_id(), custom = {kind = "button", icon = i[1]}, w = 24, h = 24}, at)
                 end}
             end
             return {title = "Иконка кнопки", items = list}
@@ -844,9 +1336,13 @@ local function create_menu()
             ask_text("Текст надписи:", "", function (text)
                 if text == "" then return end
                 add_item({id = new_custom_id(), custom = {kind = "text", text = text},
-                    w = math.max(24, math.floor(#text * 6)), h = 20})
+                    w = math.max(24, math.floor(#text * 6)), h = 20}, at)
                 M.render()
             end)
+        end}
+        items[#items + 1] = {title = "Плашка (подложка под кнопки)", icon = "rectangle", action = function ()
+            add_item({id = new_custom_id(), custom = {kind = "plate"}, w = 240, h = 56}, at)
+            toast("Плашка создана: растяни её под группу кнопок; цвет и скругление — в свойствах", 6)
         end}
         items[#items + 1] = {title = "Зона наведения", icon = "highlight_alt", action = function ()
             local used = {}
@@ -855,7 +1351,7 @@ local function create_menu()
             while used["zone_" .. n] do n = n + 1 end
             local W, H = api.dims()
             add_item({id = "zone_" .. n, custom = {kind = "zone", name = "Зона " .. n},
-                anchor = "center", x = -100, w = 200, bottom = math.floor(H / 2 - 60), h = 120})
+                anchor = "center", x = -100, w = 200, bottom = math.floor(H / 2 - 60), h = 120}, at)
             toast("Зона создана: растяни её, потом у кнопки «Появляется в зоне» выбери её", 6)
         end}
         local missing = {}
@@ -880,16 +1376,18 @@ local function create_menu()
             for _, item in ipairs(ed.skin.items) do present[item.id] = true end
             local defaults = {}
             for _, item in ipairs(api.default_skin().items) do defaults[item.id] = item end
+            for _, item in ipairs(api.default_wc_items()) do defaults[item.id] = item end
             local list = {}
             for _, id in ipairs(BUILTIN) do
-                if not present[id] and api.element_type(id) then
+                if not present[id] and api.element_type(id)
+                   and (api.window_controls() or not (id == "close" or id == "maximize" or id == "minimize")) then
                     list[#list + 1] = {title = NAMES[id] or id, action = function ()
                         local default = defaults[id]
-                        if default and default.anchor == "stretch" then
-                            add_item(api.copy(default)) -- spans the window at its standard height
+                        if default and (default.anchor == "stretch" or default.show_in == "top") then
+                            add_item(api.copy(default), at) -- spans the window at its standard height
                         else
                             local w = default and default.w or (id == "speed" and 42 or (id == "cache_info" and 70 or 24))
-                            add_item({id = id, w = w, h = default and default.h or 24})
+                            add_item({id = id, w = w, h = default and default.h or 24}, at)
                         end
                     end}
                 end
@@ -897,7 +1395,7 @@ local function create_menu()
             if #list == 0 then list[1] = {title = "Все встроенные элементы уже на панели", muted = true} end
             return {title = "Встроенный элемент", items = list}
         end}
-        return {title = "Создать объект", items = items}
+        return {title = at and "Создать здесь" or "Создать объект", items = items}
     end
 end
 
@@ -916,9 +1414,17 @@ local LOOK = {
     bg_alpha = {{"Почти непрозрачная", 16}, {"Плотная", 36}, {"Как обычно", nil}, {"Лёгкая", 110}, {"Еле заметная", 170}},
     bg_color = {{"Тёмная (как обычно)", nil}, {"Чёрная", "#000000"}, {"Синеватая", "#141A2A"}, {"Фиолетовая", "#1D1630"},
                 {"Белая", "#FFFFFF"}},
+    handle_color = {{"Как в теме", nil}},
+    handle_border_color = {{"Как в теме", nil}, {"Без обводки", "none"}},
 }
+for _, c in ipairs(COLORS) do
+    table.insert(LOOK.handle_color, c)
+    table.insert(LOOK.handle_border_color, c)
+end
+-- look fields that also take "Свой цвет…"
+local LOOK_COLOR_KEYS = {bg_color = true, handle_color = true, handle_border_color = true}
 
-local function skin_choice(title, key)
+skin_choice = function (title, key)
     return function ()
         local items = {}
         for _, entry in ipairs(LOOK[key]) do
@@ -936,12 +1442,24 @@ local function skin_choice(title, key)
     end
 end
 
+-- a menu action that opens the color picker for a color of the whole skin
+look_color = function (title, key, back)
+    return function ()
+        picker.open({
+            title = title, value = ed.skin[key], extras = extras_of(LOOK[key]),
+            apply = function (v) ed.skin[key] = v end,
+            back = back,
+        })
+    end
+end
+
 look_menu = function ()
     return function ()
         local items = {}
         local function add(title, icon, key)
             items[#items + 1] = {title = title, icon = icon, hint = find_name(LOOK[key], ed.skin[key], tostring(ed.skin[key])),
-                                 submenu = skin_choice(title, key)}
+                                 submenu = not LOOK_COLOR_KEYS[key] and skin_choice(title, key) or nil,
+                                 action = LOOK_COLOR_KEYS[key] and look_color(title, key, M.open_look) or nil}
         end
         add("Цвет (тема)", "palette", "theme")
         add("Подложка", "layers", "background")
@@ -953,6 +1471,8 @@ look_menu = function ()
         end
         add("Толщина полосы перемотки", "line_weight", "seekbar_height")
         add("Свечение полосы", "flare", "glow")
+        add("Цвет кружка на полосе", "radio_button_checked", "handle_color")
+        add("Обводка кружка", "trip_origin", "handle_border_color")
         return {title = "Оформление скина", items = items}
     end
 end
@@ -966,7 +1486,7 @@ local function open_menu(id, builder)
     api.menu.open(id, builder)
 end
 
-local function open_properties(index)
+open_properties = function (index)
     ed.selected = index
     open_menu("skin-properties", properties(index))
 end
@@ -991,6 +1511,20 @@ end
 
 local function on_mouse_move()
     local x, y = mouse()
+    if ed.picker and picker.dragging then
+        picker.drag(x, y)
+        return
+    end
+    if ed.picker then
+        local r = picker.hit(x, y)
+        local hover = r and (r.kind == "color" and r.value or r.kind .. (r.value or "")) or nil
+        if r and (r.kind == "wheel" or r.kind == "slider") then hover = nil end
+        if hover ~= ed.picker.hover then
+            ed.picker.hover = hover
+            M.render()
+        end
+        return
+    end
     if ed.drag then
         apply_drag(x, y)
         M.render()
@@ -1009,6 +1543,10 @@ end
 
 local function on_left(info)
     local x, y = mouse()
+    if ed.picker then
+        if info.event == "down" then picker.click(x, y) else picker.dragging = nil end
+        return
+    end
     if info.event == "down" then
         local kind, value = hit(x, y)
         if kind == "button" then
@@ -1023,6 +1561,13 @@ local function on_left(info)
             local start = kind == "height" and {height = ed.skin.height} or api.copy(ed.skin.items[ed.selected])
             ed.drag = {mode = mode, index = ed.selected, mx = x, my = y, start = start,
                 dirty_before = dirty_before, confirm_before = confirm_before}
+            if mode == "move" and ed.skin.items[ed.selected].id == "volume" then
+                for i, other in ipairs(ed.skin.items) do
+                    if other.id == "zone_volume" then
+                        ed.drag.zone_index, ed.drag.zone_start = i, api.copy(other)
+                    end
+                end
+            end
         else
             ed.selected = nil
         end
@@ -1043,6 +1588,7 @@ local function on_left(info)
                 ed.dirty, ed.confirm_exit = d.dirty_before, d.confirm_before
             elseif d.mode == "move" then
                 reanchor(d.index)
+                if d.zone_index then reanchor(d.zone_index) end
                 relayout()
             end
             M.render()
@@ -1054,11 +1600,17 @@ local bindings
 local MOUSE_SECTION = "hybrid_editor_mouse"
 
 local function on_right()
-    local kind, value = hit(mouse())
+    if ed.picker then return end
+    local x, y = mouse()
+    ed.right_at = {x = x, y = y} -- for "Создать здесь…" in the properties of a zone
+    local kind, value = hit(x, y)
     if kind == "item" then
         open_properties(value)
     elseif kind == "handle" and ed.selected then
         open_properties(ed.selected)
+    elseif kind == nil then
+        -- empty spot: create an object right here
+        open_menu("skin-create", create_menu({x = x, y = y}))
     end
 end
 
@@ -1098,13 +1650,22 @@ bind = function ()
         {"ctrl+я", undo},
         {"ctrl+ы", function () if ed.dirty then save() end end},
         {"esc", function ()
-            if ed.selected then ed.selected = nil M.render() else press_button("exit") end
+            if ed.picker then picker.cancel()
+            elseif ed.selected then ed.selected = nil M.render() else press_button("exit") end
         end},
+        {"enter", function () if ed.picker then picker.done() end end},
+        {"kp_enter", function () if ed.picker then picker.done() end end},
         {"space", function () end}, {"q", function () end}, {"Q", function () end},
     }
     bindings = list
     for i, b in ipairs(list) do
-        mp.add_forced_key_binding(b[1], "hybrid-editor-" .. i, b[2], b[3])
+        -- while the color picker is open only esc / enter work
+        local fn = b[2]
+        local own = b[1] == "esc" or b[1] == "enter" or b[1] == "kp_enter"
+        mp.add_forced_key_binding(b[1], "hybrid-editor-" .. i, own and fn or function (...)
+            if ed and ed.picker then return end
+            return fn(...)
+        end, b[3])
     end
 end
 

@@ -1,0 +1,22 @@
+{
+  "name": "Островки",
+  "height": 140,
+  "background": "none",
+  "items": [
+    {"id": "title", "anchor": "stretch", "x": 32, "r": 32, "bottom": 116, "h": 22, "size": 18},
+    {"id": "seekbar", "anchor": "stretch", "x": 32, "r": 32, "bottom": 84, "h": 16},
+    {"id": "custom_1", "custom": {"kind": "plate"}, "anchor": "left", "x": 24, "w": 196, "bottom": 16, "h": 52, "alpha": 48},
+    {"id": "menu", "anchor": "left", "x": 42, "w": 24, "bottom": 30, "h": 24, "priority": 6},
+    {"id": "sub_track", "anchor": "left", "x": 82, "w": 24, "bottom": 30, "h": 24, "priority": 5},
+    {"id": "time_codes", "anchor": "left", "x": 122, "w": 84, "bottom": 34, "h": 16, "priority": 3},
+    {"id": "custom_2", "custom": {"kind": "plate"}, "anchor": "center", "x": -100, "w": 200, "bottom": 16, "h": 52, "alpha": 48},
+    {"id": "jump_backward", "anchor": "center", "x": -80, "w": 28, "bottom": 30, "h": 24, "priority": 10},
+    {"id": "play_pause", "anchor": "center", "x": -22, "w": 44, "bottom": 20, "h": 44, "priority": 10, "bg": "circle"},
+    {"id": "jump_forward", "anchor": "center", "x": 52, "w": 28, "bottom": 30, "h": 24, "priority": 10},
+    {"id": "custom_3", "custom": {"kind": "plate"}, "anchor": "right", "x": -228, "w": 204, "bottom": 16, "h": 52, "alpha": 48},
+    {"id": "file_loop", "anchor": "right", "x": -210, "w": 24, "bottom": 30, "h": 24, "priority": 4},
+    {"id": "playlist", "anchor": "right", "x": -162, "w": 24, "bottom": 30, "h": 24, "priority": 7},
+    {"id": "pip", "anchor": "right", "x": -114, "w": 24, "bottom": 30, "h": 24, "priority": 8},
+    {"id": "fullscreen", "anchor": "right", "x": -66, "w": 24, "bottom": 30, "h": 24, "priority": 9}
+  ]
+}

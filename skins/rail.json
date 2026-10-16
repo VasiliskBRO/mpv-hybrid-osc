@@ -1,0 +1,17 @@
+{
+  "name": "Боковая панель",
+  "height": 96,
+  "items": [
+    {"id": "custom_1", "custom": {"kind": "plate"}, "anchor": "left", "x": 16, "w": 52, "bottom": 220, "h": 300, "alpha": 48},
+    {"id": "menu", "anchor": "left", "x": 30, "w": 24, "bottom": 468, "h": 24},
+    {"id": "sub_track", "anchor": "left", "x": 30, "w": 24, "bottom": 424, "h": 24},
+    {"id": "playlist", "anchor": "left", "x": 30, "w": 24, "bottom": 380, "h": 24},
+    {"id": "file_loop", "anchor": "left", "x": 30, "w": 24, "bottom": 336, "h": 24},
+    {"id": "pip", "anchor": "left", "x": 30, "w": 24, "bottom": 292, "h": 24},
+    {"id": "fullscreen", "anchor": "left", "x": 30, "w": 24, "bottom": 248, "h": 24},
+    {"id": "title", "anchor": "stretch", "x": 84, "r": 24, "bottom": 60, "h": 22, "size": 17},
+    {"id": "play_pause", "anchor": "left", "x": 22, "w": 40, "bottom": 18, "h": 40, "priority": 10, "bg": "circle"},
+    {"id": "seekbar", "anchor": "stretch", "x": 80, "r": 140, "bottom": 30, "h": 16},
+    {"id": "time_codes", "anchor": "right", "x": -128, "w": 104, "bottom": 30, "h": 16, "priority": 3}
+  ]
+}
