@@ -19,6 +19,7 @@ local utils = require "mp.utils"
 local menu = require "menu"
 local menus = require "menus"
 local skins = require "skin"
+local editor = require "editor"
 mp.set_property("osc", "no")
 
 -- Parameters
@@ -2125,7 +2126,12 @@ local function download_done(success, _, error)
     state.downloading = false
 end
 
+-- names of the elements created by the last osc_init (prepare_elements() turns
+-- "elements" into a plain list, the skin editor still needs to look them up by name)
+local element_names = {}
+
 local function new_element(name, type)
+    element_names[name] = true
     elements[name] = {}
     elements[name].type = type
     elements[name].name = name
@@ -2626,16 +2632,19 @@ local function an_point(x1, y1, x2, y2, an)
 end
 
 -- boxes of all skin items for a window W x H (virtual px), with visibility;
--- returns the list and the height of the bar background
-local function resolve_skin(skin, W, H)
+-- returns the list and the height of the bar background.
+-- editing: every existing item is shown (the editor places items that appear only sometimes),
+-- nothing collapses or gets hidden for lack of space; entry.shown tells the normal visibility
+local function resolve_skin(skin, W, H, editing)
     local list = {}
     local collapses, lowered = {}, 0
     for _, item in ipairs(skin.items) do
         local entry = {item = item}
-        entry.exists = elements[item.id] ~= nil
+        entry.exists = element_names[item.id] == true
         entry.fits = not item.hide_below or W >= item.hide_below
-        entry.visible = entry.exists and entry.fits and skin_item_allowed(item.id)
-        if not entry.visible and item.collapse then
+        entry.shown = entry.exists and entry.fits and skin_item_allowed(item.id)
+        entry.visible = editing and entry.exists or entry.shown
+        if not editing and not entry.visible and item.collapse then
             collapses[#collapses + 1] = {top = item.bottom + item.h, amount = item.collapse}
             lowered = lowered + item.collapse
         end
@@ -2661,25 +2670,24 @@ local function resolve_skin(skin, W, H)
         entry.x1, entry.y1, entry.x2, entry.y2 = x1, y2 - item.h, math.max(x1, x2), y2
     end
 
-    -- overlapping items (narrow window): the less important one is hidden;
-    -- items without priority are never hidden but still block others
+    -- crowded items (narrow window): of two items with a priority that overlap or nearly touch,
+    -- the less important one is hidden; items without priority (title, seekbar) take no part,
+    -- so an item placed over the seekbar on purpose stays
     local order = {}
     for _, entry in ipairs(list) do
-        if entry.visible then order[#order + 1] = entry end
+        if entry.visible and entry.item.priority and not editing then order[#order + 1] = entry end
     end
     local function prio(entry) return entry.item.priority or math.huge end
     table.sort(order, function (a, b) return prio(a) > prio(b) end)
     local kept = {}
     local gap = 6 -- neighbours closer than this count as overlapping
     for _, entry in ipairs(order) do
-        if entry.item.priority then
-            for _, other in ipairs(kept) do
-                if prio(other) > prio(entry) and entry.x1 < other.x2 + gap and other.x1 < entry.x2 + gap
-                   and entry.y1 < other.y2 - 1 and other.y1 < entry.y2 - 1 then
-                    entry.visible = false
-                    entry.crowded = true
-                    break
-                end
+        for _, other in ipairs(kept) do
+            if prio(other) > prio(entry) and entry.x1 < other.x2 + gap and other.x1 < entry.x2 + gap
+               and entry.y1 < other.y2 - 1 and other.y1 < entry.y2 - 1 then
+                entry.visible = false
+                entry.crowded = true
+                break
             end
         end
         if entry.visible then kept[#kept + 1] = entry end
@@ -2689,7 +2697,7 @@ end
 
 layouts["skin"] = function ()
     local W, H = osc_param.playresx, osc_param.playresy
-    local list, bar_h = resolve_skin(get_skin(), W, H)
+    local list, bar_h = resolve_skin(get_skin(), W, H, state.skin_editing)
 
     osc_param.video_margins.b = bar_h / H
     osc_param.areas = {}
@@ -2981,6 +2989,7 @@ local function osc_init()
     osc_param.video_margins = {l = 0, r = 0, t = 0, b = 0}
 
     elements = {}
+    element_names = {}
 
     -- some often needed stuff
     local pl_count = state.playlist_count
@@ -4023,7 +4032,7 @@ local function process_event(source, what)
 end
 
 local function do_enable_keybindings()
-    if state.enabled and not state.menu_open then
+    if state.enabled and not state.menu_open and not state.skin_editing then
         if not state.showhide_enabled then
             mp.enable_key_bindings("showhide", "allow-vo-dragging+allow-hide-cursor")
             mp.enable_key_bindings("showhide_wc", "allow-vo-dragging+allow-hide-cursor")
@@ -4134,6 +4143,7 @@ local function render()
     local function update_input_area(area_name, visible, enabled_key, enable_fn)
         local areas = osc_param.areas[area_name]
         if not areas then return end
+        if state.skin_editing then visible = false end -- the skin editor owns the mouse
         for _, cords in ipairs(areas) do
             if visible then
                 set_virt_mouse_area(cords.x1, cords.y1, cords.x2, cords.y2, area_name)
@@ -4146,7 +4156,7 @@ local function render()
     end
 
     -- sync input area to cursor position
-    local want_input = (state.osc_visible or state.vol_visible) and not state.menu_open
+    local want_input = (state.osc_visible or state.vol_visible) and not state.menu_open and not state.skin_editing
     if want_input ~= state.input_enabled then
         if want_input then
             mp.enable_key_bindings("input")
@@ -4823,6 +4833,51 @@ menu.setup({
     on_close = function () osc_suspend(false) end,
 })
 menus.init(menu)
+
+-- skin editor: works on the skin that layout=skin draws
+local editor_restore = {}
+editor.init({
+    get_skin = get_skin,
+    set_skin = function (skin) current_skin = skin end,
+    default_skin = function () return skins.copy(skins.DEFAULT) end,
+    copy = skins.copy,
+    save = function (skin) return skins.save(user_opts.skin, skin) end,
+    resolve = function (skin)
+        return (resolve_skin(skin, osc_param.playresx, osc_param.playresy, true))
+    end,
+    relayout = request_init_resize,
+    dims = function () return osc_param.playresx, osc_param.playresy end,
+    scale = get_virt_scale_factor,
+    accent = function () return user_opts.seekbarfg_color end,
+    font = function () return user_opts.font end,
+    set_editing = function (on)
+        if on then
+            menu.close()
+            editor_restore = {visibility = user_opts.visibility, layout = user_opts.layout}
+            user_opts.layout = "skin"
+            state.skin_editing = true
+            visibility_mode("always", true)
+            -- the bar stays visible but its own mouse handling is off: the editor owns the mouse
+            state.active_element = nil
+            for _, section in ipairs({"showhide", "showhide_wc", "showhide_vol", "input", "input_wheel", "input_mid",
+                                      "window-controls", "window-controls-title", "window-controls-ontop"}) do
+                mp.disable_key_bindings(section)
+            end
+            state.showhide_enabled = false
+            state.input_enabled = false
+            state.windowcontrols_buttons = false
+            state.windowcontrols_title = false
+            state.windowcontrols_ontop = false
+        else
+            state.skin_editing = false
+            user_opts.layout = editor_restore.layout or user_opts.layout
+            mp.enable_key_bindings("input_wheel")
+            mp.enable_key_bindings("input_mid")
+            visibility_mode(editor_restore.visibility or "auto", true)
+        end
+        request_init_resize()
+    end,
+})
 
 --
 -- Hybrid: single click on the video toggles pause.

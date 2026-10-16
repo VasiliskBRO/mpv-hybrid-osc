@@ -59,6 +59,7 @@ local T = {
     missing = "файл не найден",
     today = "сегодня",
     yesterday = "вчера",
+    editor = "Редактор оболочки",
     quality = "Качество",
     quality_loading = "Узнаю доступные качества…",
     quality_none = "Качество меняется только у стримов и онлайн-видео",
@@ -562,6 +563,9 @@ local function main_menu()
     local loop_hints = {off = T.loop_off_hint, file = T.loop_file_hint, playlist = T.loop_playlist_hint}
     add({title = T.loop, icon = "repeat", hint = loop_hints[loop_state()], submenu = loops})
     add({title = T.audio_device, icon = "speaker", submenu = audio_devices, separator = true})
+    add({title = T.editor, icon = "dashboard_customize", hint = "Ctrl+E", action = function ()
+        mp.command("script-binding hybrid/editor")
+    end})
     add({title = T.screenshot, icon = "photo_camera", hint = "S", action = function ()
         mp.add_timeout(0.15, function () mp.commandv("osd-msg", "screenshot") end)
     end})
