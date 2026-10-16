@@ -10,6 +10,8 @@
 --     bg_inset       capsule: gap to the window edges (virtual px); bg_radius - corner radius;
 --     bg_color       capsule color "#RRGGBB"; bg_alpha - capsule transparency 0..255
 --     glow           true: the played part of the seekbar glows in the accent color
+--     handle_color   color of the seekbar handle "#RRGGBB" (default: from the theme)
+--     handle_border_color  its inner border "#RRGGBB", "none" - no border (default: from the theme)
 --   zones_edited - true: the hover zones are items of the skin (kind "zone"), the standard ones
 --              included (zone_bottom, zone_top, zone_volume; a deleted one does not work);
 --              otherwise the standard zones are computed and there are no own zones
@@ -154,6 +156,9 @@ local function normalize(skin)
     skin.bg_alpha = tonumber(skin.bg_alpha)
     if type(skin.bg_color) ~= "string" or not skin.bg_color:match("^#%x%x%x%x%x%x$") then skin.bg_color = nil end
     skin.glow = skin.glow == true or nil
+    if type(skin.handle_color) ~= "string" or not skin.handle_color:match("^#%x%x%x%x%x%x$") then skin.handle_color = nil end
+    local hbc = skin.handle_border_color
+    if type(hbc) ~= "string" or not (hbc == "none" or hbc:match("^#%x%x%x%x%x%x$")) then skin.handle_border_color = nil end
     -- the skin this one was copied from: "Как по умолчанию" goes back to its original
     skin.based_on = type(skin.based_on) == "string" and skin.based_on:match("^[%w_%-]+$") and skin.based_on or nil
     return skin
@@ -189,7 +194,8 @@ end
 -- JSON with a stable key order and one item per line, so the file stays readable
 local KEY_ORDER = {"id", "custom", "anchor", "x", "w", "r", "bottom", "h", "priority", "hide_below", "collapse",
                    "size", "color", "alpha", "font", "bg", "bg_color", "bg_alpha", "radius", "pad", "show_in", "tooltip", "actions"}
-local LOOK_KEYS = {"theme", "seekbar_height", "background", "bg_inset", "bg_radius", "bg_color", "bg_alpha", "glow"}
+local LOOK_KEYS = {"theme", "seekbar_height", "background", "bg_inset", "bg_radius", "bg_color", "bg_alpha", "glow",
+                   "handle_color", "handle_border_color"}
 M.LOOK_KEYS = LOOK_KEYS
 
 local function json_value(value)

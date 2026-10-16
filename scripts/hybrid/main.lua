@@ -5744,7 +5744,8 @@ end
 
 apply_skin_look = function ()
     local skin = (user_opts.layout == "skin" and not state.is_image) and get_skin() or {}
-    local key = (skin.theme or "") .. "|" .. (skin.seekbar_height or "")
+    local key = table.concat({skin.theme or "", skin.seekbar_height or "",
+                              skin.handle_color or "", skin.handle_border_color or ""}, "|")
     if key == applied_look then return end
     applied_look = key
     for _, k in ipairs(LOOK_OPTS) do user_opts[k] = base_look[k] end
@@ -5753,6 +5754,11 @@ apply_skin_look = function ()
         apply_theme()
     end
     if skin.seekbar_height then user_opts.seekbar_height = skin.seekbar_height end
+    -- the seekbar handle may have its own colors, over the theme
+    if skin.handle_color then user_opts.seek_handle_color = skin.handle_color end
+    if skin.handle_border_color then
+        user_opts.seek_handle_border_color = skin.handle_border_color ~= "none" and skin.handle_border_color or ""
+    end
     set_osc_styles()
     menu.setup({accent = user_opts.seekbarfg_color, font = user_opts.font})
 end

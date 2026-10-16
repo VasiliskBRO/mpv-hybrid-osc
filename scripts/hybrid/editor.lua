@@ -476,7 +476,7 @@ end
 
 -- properties menu -------------------------------------------------------------------------
 
-local look_menu
+local look_menu, skin_choice
 
 -- what a button can do; command nil = what the element does by itself
 local ACTIONS = {
@@ -761,6 +761,15 @@ local function properties(index)
                      submenu = color_list("Цвет", colors, function () return ed.skin.items[index].color end, index,
                          function (it, v) it.color = v end)})
             end
+            if item.id == "seekbar" then
+                -- the handle colors belong to the whole skin (same as in "Оформление")
+                local function look_entry(title, icon, key)
+                    local hint = ed.skin[key] == "none" and "без обводки" or ed.skin[key] or "как в теме"
+                    add({title = title, icon = icon, hint = hint, submenu = skin_choice(title, key)})
+                end
+                look_entry("Цвет кружка", "radio_button_checked", "handle_color")
+                look_entry("Обводка кружка", "trip_origin", "handle_border_color")
+            end
             add({title = "Прозрачность", icon = "opacity", hint = find_name(ALPHAS, item.alpha),
                  submenu = choice_list("Прозрачность", ALPHAS, function () return ed.skin.items[index].alpha end, index,
                      function (it, v) it.alpha = v end)})
@@ -978,9 +987,17 @@ local LOOK = {
     bg_alpha = {{"Почти непрозрачная", 16}, {"Плотная", 36}, {"Как обычно", nil}, {"Лёгкая", 110}, {"Еле заметная", 170}},
     bg_color = {{"Тёмная (как обычно)", nil}, {"Чёрная", "#000000"}, {"Синеватая", "#141A2A"}, {"Фиолетовая", "#1D1630"},
                 {"Белая", "#FFFFFF"}},
+    handle_color = {{"Как в теме", nil}},
+    handle_border_color = {{"Как в теме", nil}, {"Без обводки", "none"}},
 }
+for _, c in ipairs(COLORS) do
+    table.insert(LOOK.handle_color, c)
+    table.insert(LOOK.handle_border_color, c)
+end
+-- look fields that also take "Свой цвет…"
+local LOOK_COLOR_KEYS = {bg_color = true, handle_color = true, handle_border_color = true}
 
-local function skin_choice(title, key)
+skin_choice = function (title, key)
     return function ()
         local items = {}
         for _, entry in ipairs(LOOK[key]) do
@@ -994,17 +1011,19 @@ local function skin_choice(title, key)
                 end,
             }
         end
-        if key == "bg_color" then
+        if LOOK_COLOR_KEYS[key] then
+            local value = ed.skin[key]
+            local own = value and value:match("^#") and value or nil
             items[#items].separator = true
-            items[#items + 1] = {title = "Свой цвет…", hint = ed.skin.bg_color or "код вида #33FF66", action = function ()
-                ask_text("Цвет (код вида #33FF66):", ed.skin.bg_color or "#", function (text)
+            items[#items + 1] = {title = "Свой цвет…", hint = own or "код вида #33FF66", action = function ()
+                ask_text("Цвет (код вида #33FF66):", own or "#", function (text)
                     local color = parse_color(text)
                     if not color then
                         toast("Не понял цвет: нужен код вида #33FF66", 4)
                         return
                     end
                     push_undo()
-                    ed.skin.bg_color = color
+                    ed.skin[key] = color
                     relayout()
                     M.render()
                 end)
@@ -1031,6 +1050,8 @@ look_menu = function ()
         end
         add("Толщина полосы перемотки", "line_weight", "seekbar_height")
         add("Свечение полосы", "flare", "glow")
+        add("Цвет кружка на полосе", "radio_button_checked", "handle_color")
+        add("Обводка кружка", "trip_origin", "handle_border_color")
         return {title = "Оформление скина", items = items}
     end
 end
