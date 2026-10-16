@@ -7,7 +7,7 @@ local menu -- renderer, set in M.init()
 local hooks = {} -- skin functions from main.lua, set in M.init()
 
 local T = {
-    menu = "Меню",
+    menu = "Prism",
     open_file = "Открыть файл…",
     load_subs = "Загрузить субтитры…",
     playlist = "Плейлист",
