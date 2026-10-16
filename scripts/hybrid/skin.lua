@@ -18,6 +18,7 @@
 --   color     "#RRGGBB" instead of the theme's color
 --   alpha     transparency 0 (opaque) .. 255 (invisible)
 --   tooltip   text shown on hover (buttons)
+--   zone      item above the bar: how far around it (virtual px) the mouse shows the bar, default 20
 --   actions   {left = "mpv command", right = ..., wheel_up = ..., wheel_down = ...};
 --             "ignore" = do nothing; replaces what the element does with that button
 --   custom    objects made in the editor (id "custom_N"):
@@ -86,6 +87,7 @@ local function normalize(skin)
             item.collapse = tonumber(item.collapse)
             item.size = tonumber(item.size)
             item.alpha = tonumber(item.alpha)
+            item.zone = tonumber(item.zone)
             if type(item.color) ~= "string" or not item.color:match("^#%x%x%x%x%x%x$") then item.color = nil end
             if type(item.tooltip) ~= "string" then item.tooltip = nil end
             if type(item.custom) == "table" and (item.custom.kind == "button" or item.custom.kind == "text") then
@@ -134,7 +136,7 @@ end
 
 -- JSON with a stable key order and one item per line, so the file stays readable
 local KEY_ORDER = {"id", "custom", "anchor", "x", "w", "r", "bottom", "h", "priority", "hide_below", "collapse",
-                   "size", "color", "alpha", "tooltip", "actions"}
+                   "size", "color", "alpha", "zone", "tooltip", "actions"}
 
 local function json_value(value)
     if type(value) == "number" then

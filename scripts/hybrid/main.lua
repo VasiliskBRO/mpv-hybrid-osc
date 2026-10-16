@@ -1984,6 +1984,10 @@ local function render_elements(master_ass)
                     local seekbar_ref = (state.seekbar_element and state.seekbar_element.hitbox) and state.seekbar_element or element
                     local image_mode_offset = (seekbar_ref == element) and 10 or 0
                     local ty = seekbar_ref.hitbox.y1 - user_opts.tooltip_height_offset - image_mode_offset
+                    if element.hitbox.y2 < seekbar_ref.hitbox.y1 - 40 then
+                        -- a button far above the bar (placed there in the skin editor): tooltip right under it
+                        ty = element.hitbox.y2 + 6 + user_opts.tooltip_font_size + 3
+                    end
 
                     local osd_w = mp.get_property_number("osd-width")
                     local r_w = get_virt_scale_factor()
@@ -2644,6 +2648,9 @@ local function resolve_skin(skin, W, H, editing)
         entry.fits = not item.hide_below or W >= item.hide_below
         entry.shown = entry.exists and entry.fits and skin_item_allowed(item.id)
         entry.visible = editing and entry.exists or entry.shown
+        -- an item placed above the bar background lives on its own: it does not move with the bar
+        -- and gets its own hover zone
+        entry.floating = item.bottom >= skin.height
         if not editing and not entry.visible and item.collapse then
             collapses[#collapses + 1] = {top = item.bottom + item.h, amount = item.collapse}
             lowered = lowered + item.collapse
@@ -2654,7 +2661,7 @@ local function resolve_skin(skin, W, H, editing)
         local item = entry.item
         local dy = 0
         for _, c in ipairs(collapses) do
-            if item.bottom >= c.top - 0.5 then dy = dy + c.amount end
+            if not entry.floating and item.bottom >= c.top - 0.5 then dy = dy + c.amount end
         end
         local x1, x2
         if item.anchor == "stretch" then
@@ -2693,6 +2700,32 @@ local function resolve_skin(skin, W, H, editing)
         if entry.visible then kept[#kept + 1] = entry end
     end
     return list, math.max(0, skin.height - lowered)
+end
+
+-- hover zones of a resolved skin: where the mouse shows the bar.
+-- bar = {x1, y1, x2, y2} - the bottom zone (bar + deadzone above it), input = the bar and its items;
+-- floating = one zone per item placed above the bar (the item plus item.zone px around it)
+local SKIN_ZONE = 20
+local function skin_zones(list, W, H, bar_h)
+    local ix1, iy1, ix2, iy2 = 0, H - bar_h, W, H
+    local floating = {}
+    for _, e in ipairs(list) do
+        if e.visible then
+            if e.floating then
+                local pad = e.item.zone or SKIN_ZONE
+                floating[#floating + 1] = {entry = e, x1 = math.max(0, e.x1 - pad), y1 = math.max(0, e.y1 - pad),
+                                           x2 = math.min(W, e.x2 + pad), y2 = math.min(H, e.y2 + pad)}
+            else
+                ix1, iy1 = math.min(ix1, e.x1), math.min(iy1, e.y1)
+                ix2, iy2 = math.max(ix2, e.x2), math.max(iy2, e.y2)
+            end
+        end
+    end
+    return {
+        input = {x1 = ix1, y1 = iy1, x2 = ix2, y2 = iy2},
+        bar = {x1 = 0, y1 = get_align(-1 + (2 * user_opts.deadzonesize), iy1, 0, 0), x2 = W, y2 = H},
+        floating = floating,
+    }
 end
 
 -- mouse buttons of skin item actions -> element event names
@@ -2737,16 +2770,17 @@ layouts["skin"] = function ()
     osc_param.video_margins.b = bar_h / H
     osc_param.areas = {}
 
-    -- mouse input covers the bar and every item, even one dragged above the bar
-    local ix1, iy1, ix2, iy2 = 0, H - bar_h, W, H
-    for _, e in ipairs(list) do
-        if e.visible then
-            ix1, iy1 = math.min(ix1, e.x1), math.min(iy1, e.y1)
-            ix2, iy2 = math.max(ix2, e.x2), math.max(iy2, e.y2)
-        end
+    -- mouse input covers the bar with its items; an item placed above the bar gets its own
+    -- small zone, so the whole window between them does not count as "over the bar"
+    -- (the bottom zone goes first: the volume widget reads showhide[1])
+    local zones = skin_zones(list, W, H, bar_h)
+    local z = zones.input
+    add_area("input", z.x1, z.y1, z.x2, z.y2)
+    add_area("showhide", zones.bar.x1, zones.bar.y1, zones.bar.x2, zones.bar.y2)
+    for _, f in ipairs(zones.floating) do
+        add_area("input", f.x1, f.y1, f.x2, f.y2)
+        add_area("showhide", f.x1, f.y1, f.x2, f.y2)
     end
-    add_area("input", ix1, iy1, ix2, iy2)
-    add_area("showhide", 0, get_align(-1 + (2 * user_opts.deadzonesize), iy1, 0, 0), W, H)
 
     setup_bg_elements(0, H, W, bar_h, user_opts.fade_transparency_strength, user_opts.window_fade_transparency_strength)
 
@@ -4056,6 +4090,12 @@ local function process_event(source, what)
                 elseif user_opts.visibility ~= "always" and not state.keeponpause_active and user_opts.deadzone_hide ~= "timeout" then
                     hide_osc()
                 end
+            elseif #(osc_param.areas["showhide"] or {}) > 1 and not mouse_in_area({"showhide", "showhide_wc"}) then
+                -- skin with items above the bar: the mpv box spans all zones, the gaps between them are a deadzone
+                if user_opts.visibility ~= "always" and not state.keeponpause_active and user_opts.deadzone_hide ~= "timeout" then
+                    hide_osc()
+                    if window_controls_enabled() then hide_wc() end
+                end
             else
                 show_osc()
                 if window_controls_enabled() then show_wc() end
@@ -4174,10 +4214,16 @@ local function render()
     run_fade("wc_anitype", "wc_anistart", "wc_animation", wc_visible)
     run_fade("vol_anitype", "vol_anistart", "vol_animation", vol_visible)
 
-    --mouse show/hide area
-    for _, cords in pairs(osc_param.areas["showhide"]) do
-        set_virt_mouse_area(cords.x1, cords.y1, cords.x2, cords.y2, "showhide")
+    --mouse show/hide area: mpv keeps one box per section, so it gets the box around all zones;
+    -- the mouse_move handler checks the zones themselves
+    local sh_x1, sh_y1, sh_x2, sh_y2
+    for _, cords in ipairs(osc_param.areas["showhide"]) do
+        sh_x1 = math.min(sh_x1 or cords.x1, cords.x1)
+        sh_y1 = math.min(sh_y1 or cords.y1, cords.y1)
+        sh_x2 = math.max(sh_x2 or cords.x2, cords.x2)
+        sh_y2 = math.max(sh_y2 or cords.y2, cords.y2)
     end
+    if sh_x1 then set_virt_mouse_area(sh_x1, sh_y1, sh_x2, sh_y2, "showhide") end
     if osc_param.areas["showhide_wc"] then
         for _, cords in pairs(osc_param.areas["showhide_wc"]) do
             set_virt_mouse_area(cords.x1, cords.y1, cords.x2, cords.y2, "showhide_wc")
@@ -4939,6 +4985,12 @@ editor.init({
     resolve = function (skin)
         return (resolve_skin(skin, osc_param.playresx, osc_param.playresy, true))
     end,
+    zones = function (skin)
+        local W, H = osc_param.playresx, osc_param.playresy
+        local list, bar_h = resolve_skin(skin, W, H, true)
+        return skin_zones(list, W, H, bar_h)
+    end,
+    zone_default = SKIN_ZONE,
     relayout = request_init_resize,
     dims = function () return osc_param.playresx, osc_param.playresy end,
     scale = get_virt_scale_factor,
