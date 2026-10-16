@@ -18,6 +18,7 @@ local opt = require "mp.options"
 local utils = require "mp.utils"
 local menu = require "menu"
 local menus = require "menus"
+local skins = require "skin"
 mp.set_property("osc", "no")
 
 -- Parameters
@@ -26,7 +27,8 @@ mp.set_property("osc", "no")
 local user_opts = {
     -- Language and display
     language = "ru",                       -- set language: "ru" or "default" (English)
-    layout = "default",                    -- set layout (only "default" is available)
+    layout = "default",                    -- "default" (classic hybrid bar) or "skin" (positions from skins/<skin>.json)
+    skin = "standard",                     -- skin file name in ~~/skins/ (without .json), used with layout=skin
     icon_theme = "fluent",                 -- set icon theme. accepts "fluent" or "material"
     icon_style = "mixed",                  -- "mixed", "filled", "outline"
     font = "Segoe UI",                     -- font for the OSC text
@@ -2584,6 +2586,188 @@ layouts["default"] = function ()
     end
 end
 
+--
+-- Skin layout: element positions come from a skin file (see skin.lua)
+--
+local current_skin
+
+local function get_skin()
+    if not current_skin then current_skin = skins.load(user_opts.skin) end
+    return current_skin
+end
+
+-- button styles by element; everything not listed is a side button (control_3)
+local SKIN_STYLES = {
+    play_pause = "control_1",
+    jump_backward = "control_2", jump_forward = "control_2",
+    playlist_prev = "control_2", playlist_next = "control_2",
+    chapter_prev = "control_2", chapter_next = "control_2",
+    speed = "speed",
+}
+
+-- elements that only make sense in some situations
+local function skin_item_allowed(id)
+    if id == "title" then return user_opts.show_title end
+    if id == "chapter_title" then return user_opts.show_chapter_title and (state.chapter or -1) >= 0 end
+    if id == "time_codes" then return (state.duration or 0) > 0 end
+    if id == "playlist_prev" or id == "playlist_next" then return state.playlist_count > 1 end
+    if id == "chapter_prev" or id == "chapter_next" then return #state.chapter_list > 0 end
+    if id == "audio_track" then return state.audio_track_count > 0 end
+    return true
+end
+
+-- point of a box for an ASS alignment (numpad layout: 7 8 9 / 4 5 6 / 1 2 3)
+local function an_point(x1, y1, x2, y2, an)
+    local col = (an - 1) % 3
+    local row = math.floor((an - 1) / 3)
+    local x = col == 0 and x1 or (col == 1 and (x1 + x2) / 2 or x2)
+    local y = row == 0 and y2 or (row == 1 and (y1 + y2) / 2 or y1)
+    return x, y
+end
+
+-- boxes of all skin items for a window W x H (virtual px), with visibility;
+-- returns the list and the height of the bar background
+local function resolve_skin(skin, W, H)
+    local list = {}
+    local collapses, lowered = {}, 0
+    for _, item in ipairs(skin.items) do
+        local entry = {item = item}
+        entry.exists = elements[item.id] ~= nil
+        entry.fits = not item.hide_below or W >= item.hide_below
+        entry.visible = entry.exists and entry.fits and skin_item_allowed(item.id)
+        if not entry.visible and item.collapse then
+            collapses[#collapses + 1] = {top = item.bottom + item.h, amount = item.collapse}
+            lowered = lowered + item.collapse
+        end
+        list[#list + 1] = entry
+    end
+    for _, entry in ipairs(list) do
+        local item = entry.item
+        local dy = 0
+        for _, c in ipairs(collapses) do
+            if item.bottom >= c.top - 0.5 then dy = dy + c.amount end
+        end
+        local x1, x2
+        if item.anchor == "stretch" then
+            x1, x2 = item.x, W - item.r
+        else
+            local ax = item.anchor == "center" and W / 2 or (item.anchor == "right" and W or 0)
+            -- the time text decides its own width (it grows with hours)
+            local w = item.id == "time_codes" and get_time_codes_width() or item.w
+            x1 = ax + item.x
+            x2 = x1 + w
+        end
+        local y2 = H - (item.bottom - dy)
+        entry.x1, entry.y1, entry.x2, entry.y2 = x1, y2 - item.h, math.max(x1, x2), y2
+    end
+
+    -- overlapping items (narrow window): the less important one is hidden;
+    -- items without priority are never hidden but still block others
+    local order = {}
+    for _, entry in ipairs(list) do
+        if entry.visible then order[#order + 1] = entry end
+    end
+    local function prio(entry) return entry.item.priority or math.huge end
+    table.sort(order, function (a, b) return prio(a) > prio(b) end)
+    local kept = {}
+    local gap = 6 -- neighbours closer than this count as overlapping
+    for _, entry in ipairs(order) do
+        if entry.item.priority then
+            for _, other in ipairs(kept) do
+                if prio(other) > prio(entry) and entry.x1 < other.x2 + gap and other.x1 < entry.x2 + gap
+                   and entry.y1 < other.y2 - 1 and other.y1 < entry.y2 - 1 then
+                    entry.visible = false
+                    entry.crowded = true
+                    break
+                end
+            end
+        end
+        if entry.visible then kept[#kept + 1] = entry end
+    end
+    return list, math.max(0, skin.height - lowered)
+end
+
+layouts["skin"] = function ()
+    local W, H = osc_param.playresx, osc_param.playresy
+    local list, bar_h = resolve_skin(get_skin(), W, H)
+
+    osc_param.video_margins.b = bar_h / H
+    osc_param.areas = {}
+
+    -- mouse input covers the bar and every item, even one dragged above the bar
+    local ix1, iy1, ix2, iy2 = 0, H - bar_h, W, H
+    for _, e in ipairs(list) do
+        if e.visible then
+            ix1, iy1 = math.min(ix1, e.x1), math.min(iy1, e.y1)
+            ix2, iy2 = math.max(ix2, e.x2), math.max(iy2, e.y2)
+        end
+    end
+    add_area("input", ix1, iy1, ix2, iy2)
+    add_area("showhide", 0, get_align(-1 + (2 * user_opts.deadzonesize), iy1, 0, 0), W, H)
+
+    setup_bg_elements(0, H, W, bar_h, user_opts.fade_transparency_strength, user_opts.window_fade_transparency_strength)
+
+    local function place(id, an, e)
+        local x, y = an_point(e.x1, e.y1, e.x2, e.y2, an)
+        local lo = add_layout(id)
+        lo.geometry = {x = x, y = y, an = an, w = e.x2 - e.x1, h = e.y2 - e.y1}
+        return lo
+    end
+
+    for _, e in ipairs(list) do
+        local id = e.item.id
+        if e.visible then
+            elements[id].visible = true
+            local lo
+            if id == "title" or id == "chapter_title" then
+                lo = place(id, 1, e)
+                lo.layer = 48
+                lo.alpha[3] = 0
+                lo.style = string.format("%s{\\clip(%f,%f,%f,%f)}", osc_styles[id], 0, 0, e.x2, e.y2)
+                if id == "title" then state.title_max_w = e.x2 - e.x1 else state.chapter_title_max_w = e.x2 - e.x1 end
+            elseif id == "seekbar" then
+                local bg_h = seekbar_height_style.height
+                local ne = new_element("seekbarbg", "box")
+                ne.visible = user_opts.nibbles_style ~= "gap"
+                lo = add_layout("seekbarbg")
+                lo.geometry = {x = (e.x1 + e.x2) / 2, y = (e.y1 + e.y2) / 2, an = 5, w = e.x2 - e.x1, h = bg_h}
+                lo.layer = 15
+                lo.style = osc_styles.seekbar_bg
+                lo.box.radius = user_opts.slider_rounded_corners and seekbar_height_style.radius or 0
+                lo.alpha[1] = 128
+                lo = place(id, 5, e)
+                lo.layer = 49
+                lo.style = osc_styles.seekbar_fg
+                lo.slider.handle_color = user_opts.seek_handle_color
+                lo.slider.handle_border = user_opts.seek_handle_border_color
+                lo.slider.gap = ((e.y2 - e.y1) - bg_h) / 2.0
+                lo.slider.radius = user_opts.slider_rounded_corners and seekbar_height_style.radius or 0
+                lo.slider.tooltip_an = 2
+            elseif id == "time_codes" or id == "cache_info" then
+                lo = place(id, 4, e)
+                lo.layer = 48
+                lo.alpha[3] = 0
+                lo.style = id == "time_codes" and osc_styles.time or osc_styles.cache
+            elseif id == "speed_ruler" then
+                place(id, 5, e)
+            else
+                lo = place(id, 5, e)
+                lo.style = osc_styles[SKIN_STYLES[id] or "control_3"]
+            end
+        elseif e.exists then
+            elements[id].visible = false
+        end
+    end
+
+    if user_opts.persistent_progress or state.persistent_progress_toggle then
+        local lo = add_layout("persistent_seekbar")
+        lo.geometry = {x = W / 2, y = H, an = 5, w = W, h = user_opts.persistent_progress_height}
+        lo.style = osc_styles.seekbar_fg
+        lo.slider.gap = (18 - seekbar_height_style.height) / 2.0
+        lo.slider.tooltip_an = 0
+    end
+end
+
 layouts["modern-image"] = function ()
     local osc_geo = {
         w = osc_param.playresx,
@@ -4956,7 +5140,7 @@ local function validate_user_opts()
     validate_string_opt("deadzone_hide", {"instant", "timeout"}, "instant")
     validate_string_opt("volume_widget", {"right", "left", "no"}, "right")
     validate_string_opt("pause_indicator", {"flash", "static", "no"}, "flash")
-    validate_string_opt("layout", {"default"}, "default")
+    validate_string_opt("layout", {"default", "skin"}, "default")
 
     local hbc = user_opts.seek_handle_border_color
     if hbc == "disable" then
@@ -5010,6 +5194,7 @@ opt.read_options(user_opts, "hybrid", function(changed)
     if changed.language then load_locale_file() end
     validate_user_opts()
     if changed.language then set_osc_locale() end
+    if changed.skin then current_skin = nil end
     menu.setup({accent = user_opts.seekbarfg_color, font = user_opts.font})
     set_icon_theme()
     set_osc_styles()
