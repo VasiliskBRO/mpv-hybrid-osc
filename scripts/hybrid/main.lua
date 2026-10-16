@@ -172,7 +172,7 @@ local user_opts = {
     seekbarbg_color = "#999999",           -- color of the remaining seekbar
     seek_handle_color = "#C96508",         -- color of the seekbar handle
     seek_handle_border_color = "#FF8232",  -- inner border color drawn inside the seekbar handle (set to "disable" to disable)
-    volumebar_match_seek_color = false,    -- match volume bar color with seekbar color (ignores side_buttons_color)
+    volumebar_match_seek_color = true,     -- volume bar fill in the seekbar (theme) color; no = side_buttons_color
     time_color = "#FFFFFF",                -- color of the timestamps (below seekbar)
     chapter_title_color = "#FFFFFF",       -- color of the chapter title
     side_buttons_color = "#FFFFFF",        -- color of the side buttons (audio, subtitles, playlist, etc.)
@@ -2332,7 +2332,7 @@ local function volume_layout()
     if sv then
         -- the skin has the widget as an item ("volume"): its box is the slider plus the mute button
         size = math.max(12, sv.x2 - sv.x1)
-        x1, y1, y2 = sv.x1, sv.y1, math.max(sv.y2, sv.y1 + size * 2 + 4)
+        x1, y1, y2 = sv.x1, sv.y1, math.max(sv.y2, sv.y1 + size * 2 + 30)
         side = (sv.x1 + sv.x2) / 2 < W / 2 and "left" or "right"
     else
         local available = bottom_y - top_y
@@ -2344,12 +2344,15 @@ local function volume_layout()
         y2 = y1 + height
     end
     osc_param.volume_rect = {x1 = x1, y1 = y1, x2 = x1 + size, y2 = y2}
-    local slider_y2 = y2 - size - 4
+    -- one capsule: the value on top (26 px), the track, the speaker button at the bottom
+    local slider_y1 = y1 + 26
+    local slider_y2 = y2 - size - 2
 
     local lo = add_layout("vol_slider")
-    lo.geometry = {x = x1, y = y1, an = 7, w = size, h = slider_y2 - y1}
+    lo.geometry = {x = x1, y = slider_y1, an = 7, w = size, h = slider_y2 - slider_y1}
     lo.group = "vol"
     lo.layer = 60
+    lo.vol_card = {x1 = x1, y1 = y1, x2 = x1 + size, y2 = y2}
 
     lo = add_layout("vol_mute")
     lo.geometry = {x = x1 + size / 2, y = y2 - size / 2, an = 5, w = 24, h = 24}
@@ -3995,9 +3998,11 @@ local function osc_init()
         value = math.max(0, math.min(volume_max(), math.floor(value + 0.5)))
         if value ~= state.volume then mp.commandv("set", "volume", value) end
     end
+    -- the track runs between the handle's centers at 0 and 100%: VOL_INSET from the hitbox ends
+    local VOL_INSET = 8
     local function volume_from_mouse(element)
         local _, mouse_y = get_virt_mouse_pos()
-        local y1, y2 = element.hitbox.y1, element.hitbox.y2
+        local y1, y2 = element.hitbox.y1 + VOL_INSET, element.hitbox.y2 - VOL_INSET
         set_volume_value((y2 - mouse_y) / (y2 - y1) * volume_max())
     end
 
@@ -4005,51 +4010,64 @@ local function osc_init()
     ne.enabled = state.audio_track_count > 0
     ne.draw = function (element, ass, anim)
         local x1, y1, x2, y2 = get_element_hitbox(element)
-        local w, h = x2 - x1, y2 - y1
-        local radius = math.min(8, w / 2)
+        local cx = (x1 + x2) / 2
         local vmax = volume_max()
         local volume = state.volume or 0
-        local fill_y = y2 - h * math.min(volume / vmax, 1)
+        local active = element.state.pressed or mouse_hit(element)
+        local card = element.layout.vol_card or {x1 = x1, y1 = y1, x2 = x2, y2 = y2}
+        local function circle(x, y, r)
+            ass:draw_start()
+            ass:round_rect_cw(x - r, y - r, x + r, y + r, r)
+            ass:draw_stop()
+        end
 
-        -- background
-        custom_layer(ass, element, anim, user_opts.osc_color, 0x55)
+        -- one glass capsule around the number, the track and the speaker button
+        custom_layer(ass, element, anim, user_opts.osc_color, 0x48)
         ass:draw_start()
-        ass:round_rect_cw(x1, y1, x2, y2, radius)
+        ass:round_rect_cw(card.x1, card.y1, card.x2, card.y2, math.min(18, (card.x2 - card.x1) / 2))
         ass:draw_stop()
 
-        -- fill (rounded bottom, flat top)
+        -- thin track like the seekbar, a bit thicker under the mouse
+        local tw = active and 8 or 6
+        local ty1, ty2 = y1 + VOL_INSET, y2 - VOL_INSET
+        local fill_y = ty2 - (ty2 - ty1) * math.min(volume / vmax, 1)
+        custom_layer(ass, element, anim, "#FFFFFF", 0xC8)
+        ass:draw_start()
+        ass:round_rect_cw(cx - tw / 2, ty1, cx + tw / 2, ty2, tw / 2)
+        ass:draw_stop()
         local fill_color = user_opts.volumebar_match_seek_color and user_opts.seekbarfg_color or user_opts.side_buttons_color
         if volume > 0 then
-            custom_layer(ass, element, anim, fill_color, state.mute and 0xA0 or 0,
-                string.format("\\clip(%f,%f,%f,%f)", x1, fill_y, x2, y2))
+            custom_layer(ass, element, anim, state.mute and "#8A8A8A" or fill_color, 0)
             ass:draw_start()
-            ass:round_rect_cw(x1, y1, x2, y2, radius)
+            ass:round_rect_cw(cx - tw / 2, fill_y, cx + tw / 2, ty2, tw / 2)
             ass:draw_stop()
         end
 
-        -- 100% marker when volume-max is above 100
+        -- 100% mark when volume-max is above 100
         if vmax > 100 then
-            local y100 = y2 - h * (100 / vmax)
-            local nub = math.max(3, math.floor(w * 0.18))
-            custom_layer(ass, element, anim, user_opts.seekbarfg_color, 0)
+            local y100 = ty2 - (ty2 - ty1) * (100 / vmax)
+            custom_layer(ass, element, anim, "#FFFFFF", 0x50)
             ass:draw_start()
-            ass:move_to(x1, y100 - nub)
-            ass:line_to(x1 + nub, y100)
-            ass:line_to(x1, y100 + nub)
-            ass:move_to(x2, y100 - nub)
-            ass:line_to(x2, y100 + nub)
-            ass:line_to(x2 - nub, y100)
+            ass:rect_cw(cx - tw / 2 - 5, y100 - 1, cx + tw / 2 + 5, y100 + 1)
             ass:draw_stop()
         end
 
-        -- value: dark over the fill, light over the background
+        -- handle in the seekbar handle colors (the skin's "Цвет кружка"), grey when muted
+        local r = active and 8 or 7
+        local border = user_opts.seek_handle_border_color
+        local inner = r
+        if border ~= "" and not state.mute then
+            custom_layer(ass, element, anim, border, 0)
+            circle(cx, fill_y, r)
+            inner = r - 2
+        end
+        custom_layer(ass, element, anim, state.mute and "#BBBBBB" or user_opts.seek_handle_color, 0)
+        circle(cx, fill_y, inner)
+
+        -- the value above the track: accent over 100%, dim when muted
         local text = tostring(math.floor(volume + 0.5))
-        local fs = math.floor(w * 0.4)
-        local ty = y2 - math.floor(w * 0.2)
-        custom_text(ass, element, anim, x1 + w / 2, ty, 2, text, fs, user_opts.osc_color,
-            string.format("\\bord0\\clip(%f,%f,%f,%f)", x1, fill_y, x2, y2))
-        custom_text(ass, element, anim, x1 + w / 2, ty, 2, text, fs, "#FFFFFF",
-            string.format("\\iclip(%f,%f,%f,%f)", x1, fill_y, x2, y2))
+        local color = state.mute and "#8A8A8A" or (volume > 100 and user_opts.seekbarfg_color or "#FFFFFF")
+        custom_text(ass, element, anim, cx, card.y1 + 15, 5, text, 14, color, "\\bord0")
 
         -- hint next to the slider
         if mouse_hit(element) and not element.state.pressed and user_opts.tooltip_hints then
