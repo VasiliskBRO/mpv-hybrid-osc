@@ -4,6 +4,7 @@ local utils = require "mp.utils"
 
 local M = {}
 local menu -- renderer, set in M.init()
+local hooks = {} -- skin functions from main.lua, set in M.init()
 
 local T = {
     menu = "Меню",
@@ -60,6 +61,18 @@ local T = {
     today = "сегодня",
     yesterday = "вчера",
     editor = "Редактор оболочки",
+    skins = "Скины",
+    skin_classic = "Классическая раскладка (без скина)",
+    skin_new = "Новый скин (копия текущего)…",
+    skin_new_prompt = "Название нового скина:",
+    skin_created = "Создан скин: ",
+    skin_rename = "Переименовать текущий…",
+    skin_rename_prompt = "Новое название скина:",
+    skin_renamed = "Скин переименован: ",
+    skin_archive = "Удалить текущий",
+    skin_archive_hint = "в skins\\archive",
+    skin_archived = "Скин перенесён в skins\\archive",
+    skin_failed = "Не получилось: ",
     quality = "Качество",
     quality_loading = "Узнаю доступные качества…",
     quality_none = "Качество меняется только у стримов и онлайн-видео",
@@ -368,6 +381,60 @@ local function speeds()
     return {title = T.speed, items = items}
 end
 
+-- skins: which layout of the bar is used (skins/*.json), made in the skin editor
+local function ask_text(prompt, default, done)
+    local ok, input = pcall(require, "mp.input")
+    if not ok then return end
+    input.get({prompt = prompt .. " ", default_text = default or "", submit = function (text)
+        input.terminate()
+        if text ~= "" then done(text) end
+    end})
+end
+
+local function report(ok, err, text)
+    mp.osd_message(ok and text or (T.skin_failed .. tostring(err)), 3)
+end
+
+local function skins_menu()
+    local layout, current, current_name = hooks.skin_current()
+    local items = {}
+    for _, skin in ipairs(hooks.skin_list()) do
+        items[#items + 1] = {
+            title = skin.name, icon = "style", active = layout == "skin" and skin.file == current,
+            hint = skin.file ~= "standard" and skin.file or nil,
+            action = function () hooks.skin_choose(skin.file, "skin") end,
+        }
+    end
+    items[#items + 1] = {title = T.skin_classic, icon = "view_quilt", active = layout ~= "skin",
+        action = function () hooks.skin_choose(nil, "default") end, separator = true}
+    items[#items + 1] = {title = T.editor, icon = "dashboard_customize", hint = "Ctrl+E", action = function ()
+        mp.command("script-binding hybrid/editor")
+    end}
+    items[#items + 1] = {title = T.skin_new, icon = "content_copy", action = function ()
+        ask_text(T.skin_new_prompt, (current_name or "") .. " 2", function (name)
+            local ok, err = hooks.skin_copy(name)
+            report(ok, err, T.skin_created .. name)
+        end)
+    end}
+    if layout == "skin" then
+        items[#items + 1] = {title = T.skin_rename, icon = "drive_file_rename_outline", hint = current_name,
+            action = function ()
+                ask_text(T.skin_rename_prompt, current_name, function (name)
+                    local ok, err = hooks.skin_rename(name)
+                    report(ok, err, T.skin_renamed .. name)
+                end)
+            end}
+        if current ~= "standard" then
+            items[#items + 1] = {title = T.skin_archive, icon = "archive", hint = T.skin_archive_hint,
+                action = function ()
+                    local ok, err = hooks.skin_archive()
+                    report(ok, err, T.skin_archived)
+                end}
+        end
+    end
+    return {title = T.skins, items = items}
+end
+
 -- stream/online video quality, provided by scripts/stream-quality.lua through user-data
 local function quality_data()
     local data = prop("user-data/stream-quality", {})
@@ -563,6 +630,10 @@ local function main_menu()
     local loop_hints = {off = T.loop_off_hint, file = T.loop_file_hint, playlist = T.loop_playlist_hint}
     add({title = T.loop, icon = "repeat", hint = loop_hints[loop_state()], submenu = loops})
     add({title = T.audio_device, icon = "speaker", submenu = audio_devices, separator = true})
+    if hooks.skin_current then
+        local layout, _, skin_name = hooks.skin_current()
+        add({title = T.skins, icon = "style", hint = layout == "skin" and skin_name or T.off_hint, submenu = skins_menu})
+    end
     add({title = T.editor, icon = "dashboard_customize", hint = "Ctrl+E", action = function ()
         mp.command("script-binding hybrid/editor")
     end})
@@ -583,8 +654,9 @@ end
 
 -- public ----------------------------------------------------------------------------------
 
-function M.init(renderer)
+function M.init(renderer, skin_hooks)
     menu = renderer
+    hooks = skin_hooks or {}
     local function binding(name, id, builder)
         mp.add_key_binding(nil, name, function () menu.open(id, builder) end)
     end
@@ -600,6 +672,7 @@ function M.init(renderer)
     binding("aspect", "aspect", aspects)
     binding("loop", "loop", loops)
     binding("quality", "quality", qualities)
+    if hooks.skin_current then binding("skins", "skins", skins_menu) end
     -- the list of live stream qualities arrives a few seconds after the start
     mp.observe_property("user-data/stream-quality", "native", function ()
         if menu.is_open() then menu.refresh() end

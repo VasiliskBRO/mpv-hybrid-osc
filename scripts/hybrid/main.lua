@@ -4890,7 +4890,43 @@ menu.setup({
         if state.skin_editing then editor.menu_closed() else osc_suspend(false) end
     end,
 })
-menus.init(menu)
+-- skin choice from the menu (remembered in ~~state/hybrid-state.json)
+local function choose_skin(name, layout)
+    if editor.is_open() then editor.close() end
+    user_opts.layout = layout or "skin"
+    if name then user_opts.skin = name end
+    current_skin = nil
+    state.chosen_skin = {skin = user_opts.skin, layout = user_opts.layout}
+    request_init_resize()
+end
+
+menus.init(menu, {
+    skin_current = function ()
+        return user_opts.layout, user_opts.skin, (user_opts.layout == "skin") and get_skin().name or nil
+    end,
+    skin_choose = choose_skin,
+    -- new skin = copy of the current one under a new name
+    skin_copy = function (display_name)
+        local file = skins.new_file_name()
+        local skin = skins.copy(get_skin())
+        skin.name = display_name
+        local ok, err = skins.save(file, skin)
+        if ok then choose_skin(file, "skin") end
+        return ok, err
+    end,
+    skin_rename = function (display_name)
+        local skin = get_skin()
+        skin.name = display_name
+        return skins.save(user_opts.skin, skin)
+    end,
+    skin_archive = function ()
+        if user_opts.skin == skins.DEFAULT_NAME then return false end
+        local ok, err = skins.archive(user_opts.skin)
+        if ok then choose_skin(skins.DEFAULT_NAME, "skin") end
+        return ok, err
+    end,
+    skin_list = skins.list,
+})
 
 -- skin editor: works on the skin that layout=skin draws
 local editor_restore = {}
@@ -5174,14 +5210,23 @@ local function load_saved_state()
     if user_opts.remember_speed and tonumber(data.speed) then
         mp.set_property_number("speed", tonumber(data.speed))
     end
+    -- skin picked in the menu wins over hybrid.conf
+    if type(data.skin) == "string" and (data.layout == "skin" or data.layout == "default") then
+        if data.layout == "default" or data.skin == skins.DEFAULT_NAME or utils.file_info(skins.path(data.skin)) then
+            user_opts.layout, user_opts.skin = data.layout, data.skin
+            state.chosen_skin = {skin = data.skin, layout = data.layout}
+        end
+    end
 end
 
 mp.register_event("shutdown", function ()
-    if not (user_opts.remember_volume or user_opts.remember_speed) then return end
-    local data = {
-        volume = mp.get_property_number("volume"),
-        speed = mp.get_property_number("speed"),
-    }
+    local data = {}
+    if user_opts.remember_volume then data.volume = mp.get_property_number("volume") end
+    if user_opts.remember_speed then data.speed = mp.get_property_number("speed") end
+    if state.chosen_skin then
+        data.skin, data.layout = state.chosen_skin.skin, state.chosen_skin.layout
+    end
+    if not next(data) then return end
     local file = io.open(saved_state_path, "w")
     if file then
         file:write(utils.format_json(data))

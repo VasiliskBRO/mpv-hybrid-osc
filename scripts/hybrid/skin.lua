@@ -176,12 +176,51 @@ function M.encode(skin)
     return table.concat(lines, "\n") .. "\n"
 end
 
-function M.save(name, skin)
-    local dir = M.dir()
+local function make_dir(dir)
     if not utils.file_info(dir) then
         mp.command_native({name = "subprocess", playback_only = false, capture_stdout = true,
             args = {"cmd", "/c", "mkdir", dir}})
     end
+end
+
+-- all skins: {file = "skin1", name = "Неон"}, the standard one first (it exists even without a file).
+-- File names stay ASCII (Lua opens files with the ANSI code page on Windows),
+-- the display name lives inside the file
+function M.list()
+    local list, seen = {}, {}
+    for _, file in ipairs(utils.readdir(M.dir(), "files") or {}) do
+        local base = file:match("^(.+)%.json$")
+        if base then
+            local skin = M.load(base)
+            list[#list + 1] = {file = base, name = skin.name or base}
+            seen[base] = true
+        end
+    end
+    if not seen[M.DEFAULT_NAME] then
+        list[#list + 1] = {file = M.DEFAULT_NAME, name = M.DEFAULT.name}
+    end
+    table.sort(list, function (a, b)
+        if (a.file == M.DEFAULT_NAME) ~= (b.file == M.DEFAULT_NAME) then return a.file == M.DEFAULT_NAME end
+        return a.name < b.name
+    end)
+    return list
+end
+
+function M.new_file_name()
+    local n = 1
+    while utils.file_info(M.path("skin" .. n)) do n = n + 1 end
+    return "skin" .. n
+end
+
+-- move a skin file to skins\archive instead of deleting it
+function M.archive(name)
+    local archive = M.dir() .. "\\archive"
+    make_dir(archive)
+    return os.rename(M.path(name), archive .. "\\" .. name .. "-" .. os.date("%Y%m%d-%H%M%S") .. ".json")
+end
+
+function M.save(name, skin)
+    make_dir(M.dir())
     local path = M.path(name)
     local tmp = path .. ".tmp"
     local file, err = io.open(tmp, "wb")
