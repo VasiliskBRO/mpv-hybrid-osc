@@ -2634,6 +2634,7 @@ end
 -- Skin layout: element positions come from a skin file (see skin.lua)
 --
 local current_skin
+local apply_skin_look -- skin colors / seekbar thickness over hybrid.conf, set up next to the themes
 
 local function get_skin()
     if not current_skin then current_skin = skins.load(user_opts.skin) end
@@ -2887,6 +2888,12 @@ local function apply_skin_item(id, lo, item)
         lo.style, replaced = lo.style:gsub("\\1c&H%x+&", color)
         if replaced == 0 then lo.style = lo.style .. "{" .. color .. "}" end
     end
+    if lo.style and item.font then
+        local font = "\\fn" .. item.font
+        local replaced
+        lo.style, replaced = lo.style:gsub("\\fn[^\\}]+", function () return font end)
+        if replaced == 0 then lo.style = lo.style .. "{" .. font .. "}" end
+    end
     if item.alpha then lo.alpha[1] = item.alpha end
     if element.type ~= "button" then return end
     if item.tooltip and item.tooltip ~= "" then element.tooltipF = item.tooltip end
@@ -2900,6 +2907,44 @@ local function apply_skin_item(id, lo, item)
             end
         end
     end
+end
+
+-- a round plate (pill for a wide box) behind a skin button: item.bg = "circle"
+local function add_skin_shape(id, e)
+    local color, alpha = e.item.bg_color or user_opts.seekbarfg_color, e.item.bg_alpha or 0
+    local ne = new_element(id .. "_bg", "custom")
+    ne.draw = function (element, ass, anim)
+        local x1, y1, x2, y2 = get_element_hitbox(element)
+        custom_layer(ass, element, anim, color, alpha)
+        ass:draw_start()
+        ass:round_rect_cw(x1, y1, x2, y2, math.min(x2 - x1, y2 - y1) / 2)
+        ass:draw_stop()
+    end
+    local lo = add_layout(id .. "_bg")
+    lo.geometry = {x = e.x1, y = e.y1, an = 7, w = e.x2 - e.x1, h = e.y2 - e.y1}
+    lo.layer = 40
+    if e.group ~= "bottom" then lo.group = e.group end
+end
+
+-- skin.glow: a blurred copy of the played part of the seekbar under it
+local function add_seekbar_glow(e)
+    local ne = new_element("seekbar_glow", "custom")
+    ne.draw = function (element, ass, anim)
+        local pos = mp.get_property_number("percent-pos")
+        if not pos then return end
+        local x1, y1, x2, y2 = get_element_hitbox(element)
+        local xe = x1 + (x2 - x1) * math.min(100, pos) / 100
+        if xe - x1 < 2 then return end
+        custom_layer(ass, element, anim, user_opts.seekbarfg_color, 0x20, "\\blur10")
+        ass:draw_start()
+        ass:round_rect_cw(x1, y1, xe, y2, (y2 - y1) / 2)
+        ass:draw_stop()
+    end
+    local h = seekbar_height_style.height + 10
+    local lo = add_layout("seekbar_glow")
+    lo.geometry = {x = e.x1, y = (e.y1 + e.y2) / 2 - h / 2, an = 7, w = e.x2 - e.x1, h = h}
+    lo.layer = 14
+    if e.group ~= "bottom" then lo.group = e.group end
 end
 
 layouts["skin"] = function ()
@@ -2933,7 +2978,20 @@ layouts["skin"] = function ()
         osc_param.skin_zone_override = {top = zones.top or false, volume = zones.volume or false}
     end
 
+    -- under the bar: the dark fade (default), a rounded plate ("capsule") or nothing
     setup_bg_elements(0, H, W, bar_h, user_opts.fade_transparency_strength, user_opts.window_fade_transparency_strength)
+    local background = skin.background or "gradient"
+    if background ~= "gradient" then elements["osc_fade_bg"].visible = false end
+    if background == "capsule" then
+        local inset = skin.bg_inset or 16
+        new_element("skin_capsule_bg", "box")
+        local lo = add_layout("skin_capsule_bg")
+        lo.geometry = {x = inset, y = H - bar_h, an = 7, w = W - 2 * inset, h = math.max(0, bar_h - inset)}
+        lo.style = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(skin.bg_color or "#101014") .. "&}"
+        lo.layer = 10
+        lo.alpha[1] = skin.bg_alpha or 64
+        lo.box.radius = skin.bg_radius or 20
+    end
 
     local function place(id, an, e)
         local x, y = an_point(e.x1, e.y1, e.x2, e.y2, an)
@@ -2993,6 +3051,8 @@ layouts["skin"] = function ()
             end
             apply_skin_item(id, lo, e.item)
             if e.group ~= "bottom" then lo.group = e.group end
+            if e.item.bg then add_skin_shape(id, e) end
+            if id == "seekbar" and skin.glow then add_seekbar_glow(e) end
         elseif e.exists then
             elements[id].visible = false
         end
@@ -3180,6 +3240,7 @@ end
 
 local function osc_init()
     msg.debug("osc_init")
+    apply_skin_look()
 
     -- set canvas resolution according to display aspect and scaling setting
     local baseResY = 720
@@ -5558,6 +5619,31 @@ local function apply_theme()
     user_opts.nibble_color = theme[1]
 end
 
+-- options a skin may override (theme colors, seekbar thickness): their values from hybrid.conf
+local LOOK_OPTS = {"theme", "seekbar_height", "seekbarfg_color", "seek_handle_color", "seek_handle_border_color",
+                   "hover_effect_color", "nibble_color"}
+local base_look, applied_look = {}, nil
+
+local function remember_base_look()
+    for _, key in ipairs(LOOK_OPTS) do base_look[key] = user_opts[key] end
+    applied_look = nil
+end
+
+apply_skin_look = function ()
+    local skin = (user_opts.layout == "skin" and not state.is_image) and get_skin() or {}
+    local key = (skin.theme or "") .. "|" .. (skin.seekbar_height or "")
+    if key == applied_look then return end
+    applied_look = key
+    for _, k in ipairs(LOOK_OPTS) do user_opts[k] = base_look[k] end
+    if skin.theme and THEMES[skin.theme] then
+        user_opts.theme = skin.theme
+        apply_theme()
+    end
+    if skin.seekbar_height then user_opts.seekbar_height = skin.seekbar_height end
+    set_osc_styles()
+    menu.setup({accent = user_opts.seekbarfg_color, font = user_opts.font})
+end
+
 local function validate_user_opts()
     apply_theme()
     if not language[user_opts.language] then
@@ -5639,6 +5725,7 @@ end
 opt.read_options(user_opts, "hybrid", function(changed)
     if changed.language then load_locale_file() end
     validate_user_opts()
+    remember_base_look()
     if changed.language then set_osc_locale() end
     if changed.skin then current_skin = nil end
     menu.setup({accent = user_opts.seekbarfg_color, font = user_opts.font})
@@ -5657,6 +5744,7 @@ end)
 
 load_locale_file()
 validate_user_opts()
+remember_base_look()
 menu.setup({accent = user_opts.seekbarfg_color, font = user_opts.font})
 load_saved_state()
 set_osc_locale()

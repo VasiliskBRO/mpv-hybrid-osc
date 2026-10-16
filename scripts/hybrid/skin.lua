@@ -3,6 +3,13 @@
 -- A skin is a JSON file in ~~/skins/<name>.json:
 --   { "name": "...", "height": 123, "items": [ item, ... ] }
 --   height - height of the bar background (virtual px, the window is 720 high)
+--   look of the skin (all optional, without them the options of hybrid.conf are used):
+--     theme          accent colors: a theme name of hybrid.conf (orange, blue, purple, green, red, pink, prism)
+--     seekbar_height thickness of the seekbar: small, medium, large, xlarge
+--     background     under the bar: "gradient" (dark fade, default), "capsule" (rounded plate), "none"
+--     bg_inset       capsule: gap to the window edges (virtual px); bg_radius - corner radius;
+--     bg_color       capsule color "#RRGGBB"; bg_alpha - capsule transparency 0..255
+--     glow           true: the played part of the seekbar glows in the accent color
 --   zones_edited - true: the hover zones are items of the skin (kind "zone"), the standard ones
 --              included (zone_bottom, zone_top, zone_volume; a deleted one does not work);
 --              otherwise the standard zones are computed and there are no own zones
@@ -93,6 +100,11 @@ local function normalize(skin)
             item.collapse = tonumber(item.collapse)
             item.size = tonumber(item.size)
             item.alpha = tonumber(item.alpha)
+            -- shape behind a button: "circle" (round / pill by the box); bg_color, bg_alpha
+            item.bg = item.bg == "circle" and "circle" or nil
+            if type(item.bg_color) ~= "string" or not item.bg_color:match("^#%x%x%x%x%x%x$") then item.bg_color = nil end
+            item.bg_alpha = tonumber(item.bg_alpha)
+            if type(item.font) ~= "string" or item.font == "" then item.font = nil end
             item.pad = tonumber(item.pad or item.zone) -- "zone" was the old name
             item.zone = nil
             if type(item.show_in) ~= "string" or item.show_in == "" then item.show_in = nil end
@@ -128,6 +140,14 @@ local function normalize(skin)
     skin.height = math.max(0, tonumber(skin.height) or M.DEFAULT.height)
     skin.name = type(skin.name) == "string" and skin.name or nil
     skin.zones_edited = skin.zones_edited == true or nil
+    skin.theme = type(skin.theme) == "string" and skin.theme or nil
+    skin.seekbar_height = ({small = 1, medium = 1, large = 1, xlarge = 1})[skin.seekbar_height] and skin.seekbar_height or nil
+    skin.background = ({gradient = 1, capsule = 1, none = 1})[skin.background] and skin.background or nil
+    skin.bg_inset = tonumber(skin.bg_inset)
+    skin.bg_radius = tonumber(skin.bg_radius)
+    skin.bg_alpha = tonumber(skin.bg_alpha)
+    if type(skin.bg_color) ~= "string" or not skin.bg_color:match("^#%x%x%x%x%x%x$") then skin.bg_color = nil end
+    skin.glow = skin.glow == true or nil
     return skin
 end
 
@@ -147,7 +167,9 @@ end
 
 -- JSON with a stable key order and one item per line, so the file stays readable
 local KEY_ORDER = {"id", "custom", "anchor", "x", "w", "r", "bottom", "h", "priority", "hide_below", "collapse",
-                   "size", "color", "alpha", "pad", "show_in", "tooltip", "actions"}
+                   "size", "color", "alpha", "font", "bg", "bg_color", "bg_alpha", "pad", "show_in", "tooltip", "actions"}
+local LOOK_KEYS = {"theme", "seekbar_height", "background", "bg_inset", "bg_radius", "bg_color", "bg_alpha", "glow"}
+M.LOOK_KEYS = LOOK_KEYS
 
 local function json_value(value)
     if type(value) == "number" then
@@ -180,6 +202,9 @@ function M.encode(skin)
     local lines = {"{"}
     lines[#lines + 1] = string.format('  "name": %s,', utils.format_json(skin.name or ""))
     lines[#lines + 1] = string.format('  "height": %s,', json_value(skin.height or M.DEFAULT.height))
+    for _, key in ipairs(LOOK_KEYS) do
+        if skin[key] ~= nil then lines[#lines + 1] = string.format('  %q: %s,', key, json_value(skin[key])) end
+    end
     if skin.zones_edited then lines[#lines + 1] = '  "zones_edited": true,' end
     lines[#lines + 1] = '  "items": ['
     for i, item in ipairs(skin.items) do

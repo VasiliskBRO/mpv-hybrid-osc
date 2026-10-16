@@ -90,7 +90,7 @@ M.item_name = item_name
 
 
 local T = {
-    save = "Сохранить", undo = "Шаг назад", create = "Создать объект", reset = "Как по умолчанию", exit = "Выйти",
+    save = "Сохранить", undo = "Шаг назад", create = "Создать объект", look = "Оформление", reset = "Как по умолчанию", exit = "Выйти",
     hint = "Тащи мышкой, за уголок — размер · правый клик — свойства · стрелки — точно · Delete — убрать",
     height = "тёмная подложка",
     zone = "зона наведения",
@@ -285,7 +285,7 @@ function M.render()
     -- toolbar
     local buttons = {
         {"save", T.save, ed.dirty}, {"undo", T.undo, #ed.undo > 0}, {"create", T.create, true},
-        {"reset", T.reset, true}, {"exit", T.exit, true},
+        {"look", T.look, true}, {"reset", T.reset, true}, {"exit", T.exit, true},
     }
     local gap, bh = 8, 30
     local bw = math.min(150, math.floor((W - 40 - (#buttons - 1) * gap) / #buttons))
@@ -446,6 +446,8 @@ local function press_button(id)
         undo()
     elseif id == "create" then
         M.open_create()
+    elseif id == "look" then
+        M.open_look()
     elseif id == "reset" then
         push_undo()
         ed.skin = M.with_zones(api.default_skin())
@@ -465,6 +467,8 @@ local function press_button(id)
 end
 
 -- properties menu -------------------------------------------------------------------------
+
+local look_menu
 
 -- what a button can do; command nil = what the element does by itself
 local ACTIONS = {
@@ -668,6 +672,23 @@ local function properties(index)
                 for _ in pairs(item.actions or {}) do count = count + 1 end
                 add({title = "Что делает", icon = "touch_app", hint = count > 0 and ("изменено: " .. count) or "как обычно",
                      submenu = actions_menu(index)})
+            end
+            if is_button then
+                local shapes = {{"Нет", "none"}, {"Круг цвета темы", "accent"}, {"Белый круг", "#FFFFFF"},
+                                {"Тёмный круг", "#121218"}}
+                local function shape_of(it) return it.bg and (it.bg_color or "accent") or "none" end
+                add({title = "Фон кнопки", icon = "circle", hint = find_name(shapes, shape_of(item)),
+                     submenu = choice_list("Фон кнопки", shapes, function () return shape_of(ed.skin.items[index]) end, index,
+                         function (it, v)
+                             it.bg = v ~= "none" and "circle" or nil
+                             it.bg_color = (v ~= "none" and v ~= "accent") and v or nil
+                         end)})
+            elseif item.id ~= "seekbar" and item.id ~= "speed_ruler" then
+                local fonts = {{"Как в теме", nil}, {"Моноширинный (Consolas)", "Consolas"}, {"Bahnschrift", "Bahnschrift"},
+                               {"Segoe UI Light", "Segoe UI Light"}, {"Segoe UI Semibold", "Segoe UI Semibold"}}
+                add({title = "Шрифт", icon = "font_download", hint = find_name(fonts, item.font, item.font),
+                     submenu = choice_list("Шрифт", fonts, function () return ed.skin.items[index].font end, index,
+                         function (it, v) it.font = v end)})
             end
             if item.id ~= "speed_ruler" then
                 local sizes = {{"Как в теме", nil}}
@@ -880,6 +901,62 @@ local function create_menu()
     end
 end
 
+-- look of the whole skin -------------------------------------------------------------------
+
+local LOOK = {
+    theme = {{"Как в настройках", nil}, {"Prism (фиолетовый)", "prism"}, {"Оранжевый", "orange"}, {"Синий", "blue"},
+             {"Фиолетовый", "purple"}, {"Зелёный", "green"}, {"Красный", "red"}, {"Розовый", "pink"}},
+    background = {{"Затемнение снизу", nil}, {"Капсула (скруглённая плашка)", "capsule"}, {"Без подложки", "none"}},
+    seekbar_height = {{"Как в настройках", nil}, {"Тонкая", "small"}, {"Средняя", "medium"}, {"Толстая", "large"},
+                      {"Очень толстая", "xlarge"}},
+    glow = {{"Выключено", nil}, {"Включено", true}},
+    bg_inset = {{"8 px", 8}, {"Как обычно (16 px)", nil}, {"24 px", 24}, {"32 px", 32}, {"48 px", 48}},
+    bg_radius = {{"Без скругления", 0}, {"8 px", 8}, {"14 px", 14}, {"Как обычно (20 px)", nil}, {"32 px", 32},
+                 {"Круглые края", 64}},
+    bg_alpha = {{"Почти непрозрачная", 16}, {"Плотная", 36}, {"Как обычно", nil}, {"Лёгкая", 110}, {"Еле заметная", 170}},
+    bg_color = {{"Тёмная (как обычно)", nil}, {"Чёрная", "#000000"}, {"Синеватая", "#141A2A"}, {"Фиолетовая", "#1D1630"},
+                {"Белая", "#FFFFFF"}},
+}
+
+local function skin_choice(title, key)
+    return function ()
+        local items = {}
+        for _, entry in ipairs(LOOK[key]) do
+            items[#items + 1] = {
+                title = entry[1], active = ed.skin[key] == entry[2],
+                action = function ()
+                    push_undo()
+                    ed.skin[key] = entry[2]
+                    relayout()
+                    return "keep"
+                end,
+            }
+        end
+        return {title = title, items = items}
+    end
+end
+
+look_menu = function ()
+    return function ()
+        local items = {}
+        local function add(title, icon, key)
+            items[#items + 1] = {title = title, icon = icon, hint = find_name(LOOK[key], ed.skin[key], tostring(ed.skin[key])),
+                                 submenu = skin_choice(title, key)}
+        end
+        add("Цвет (тема)", "palette", "theme")
+        add("Подложка", "layers", "background")
+        if ed.skin.background == "capsule" then
+            add("Отступ капсулы от краёв", "padding", "bg_inset")
+            add("Скругление капсулы", "rounded_corner", "bg_radius")
+            add("Плотность капсулы", "opacity", "bg_alpha")
+            add("Цвет капсулы", "format_color_fill", "bg_color")
+        end
+        add("Толщина полосы перемотки", "line_weight", "seekbar_height")
+        add("Свечение полосы", "flare", "glow")
+        return {title = "Оформление скина", items = items}
+    end
+end
+
 local bind, unbind
 
 local function open_menu(id, builder)
@@ -896,6 +973,10 @@ end
 
 function M.open_create()
     open_menu("skin-create", create_menu())
+end
+
+function M.open_look()
+    open_menu("skin-look", look_menu())
 end
 
 -- called by main.lua when the menu closes while the editor is open

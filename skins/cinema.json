@@ -1,0 +1,15 @@
+{
+  "name": "Кино",
+  "height": 96,
+  "seekbar_height": "small",
+  "items": [
+    {"id": "title", "anchor": "stretch", "x": 24, "r": 24, "bottom": 64, "h": 22, "size": 18},
+    {"id": "seekbar", "anchor": "stretch", "x": 12, "r": 12, "bottom": 44, "h": 14},
+    {"id": "play_pause", "anchor": "left", "x": 16, "w": 32, "bottom": 10, "h": 28, "priority": 10, "size": 26},
+    {"id": "time_codes", "anchor": "left", "x": 60, "w": 90, "bottom": 16, "h": 16, "priority": 3},
+    {"id": "sub_track", "anchor": "right", "x": -184, "w": 28, "bottom": 12, "h": 24, "priority": 5},
+    {"id": "playlist", "anchor": "right", "x": -144, "w": 28, "bottom": 12, "h": 24, "priority": 7},
+    {"id": "pip", "anchor": "right", "x": -104, "w": 28, "bottom": 12, "h": 24, "priority": 8},
+    {"id": "fullscreen", "anchor": "right", "x": -56, "w": 28, "bottom": 12, "h": 24, "priority": 9}
+  ]
+}
