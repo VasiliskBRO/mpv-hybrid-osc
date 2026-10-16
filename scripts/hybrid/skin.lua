@@ -20,6 +20,8 @@
 --   tooltip   text shown on hover (buttons)
 --   actions   {left = "mpv command", right = ..., wheel_up = ..., wheel_down = ...};
 --             "ignore" = do nothing; replaces what the element does with that button
+--   custom    objects made in the editor (id "custom_N"):
+--             {kind = "button", icon = "<Material Icons name>"} or {kind = "text", text = "..."}
 
 local utils = require "mp.utils"
 
@@ -86,6 +88,13 @@ local function normalize(skin)
             item.alpha = tonumber(item.alpha)
             if type(item.color) ~= "string" or not item.color:match("^#%x%x%x%x%x%x$") then item.color = nil end
             if type(item.tooltip) ~= "string" then item.tooltip = nil end
+            if type(item.custom) == "table" and (item.custom.kind == "button" or item.custom.kind == "text") then
+                item.custom = {kind = item.custom.kind,
+                    icon = type(item.custom.icon) == "string" and item.custom.icon or nil,
+                    text = type(item.custom.text) == "string" and item.custom.text or nil}
+            else
+                item.custom = nil
+            end
             if type(item.actions) == "table" then
                 local actions = {}
                 for button, command in pairs(item.actions) do
@@ -124,7 +133,7 @@ function M.load(name)
 end
 
 -- JSON with a stable key order and one item per line, so the file stays readable
-local KEY_ORDER = {"id", "anchor", "x", "w", "r", "bottom", "h", "priority", "hide_below", "collapse",
+local KEY_ORDER = {"id", "custom", "anchor", "x", "w", "r", "bottom", "h", "priority", "hide_below", "collapse",
                    "size", "color", "alpha", "tooltip", "actions"}
 
 local function json_value(value)

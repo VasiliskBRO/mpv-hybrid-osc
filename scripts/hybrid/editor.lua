@@ -22,8 +22,74 @@ local NAMES = {
 }
 M.NAMES = NAMES
 
+-- objects: icons, ready buttons, built-in elements --------------------------------------------------------------------------
+
+-- icons for own buttons: Material Icons name, Russian name
+local ICONS = {
+    {"play_arrow", "Воспроизведение"}, {"pause", "Пауза"}, {"skip_previous", "Назад к началу"},
+    {"skip_next", "Дальше"}, {"fast_rewind", "Перемотка назад"}, {"fast_forward", "Перемотка вперёд"},
+    {"replay_10", "Назад 10"}, {"forward_10", "Вперёд 10"}, {"replay_30", "Назад 30"}, {"forward_30", "Вперёд 30"},
+    {"volume_up", "Громче"}, {"volume_down", "Тише"}, {"volume_off", "Без звука"},
+    {"photo_camera", "Фотоаппарат"}, {"fullscreen", "Развернуть"}, {"fullscreen_exit", "Свернуть"},
+    {"picture_in_picture_alt", "Картинка в картинке"}, {"subtitles", "Субтитры"}, {"audiotrack", "Нота"},
+    {"playlist_play", "Плейлист"}, {"queue_music", "Очередь"}, {"repeat", "Повтор"}, {"repeat_one", "Повтор одного"},
+    {"shuffle", "Перемешать"}, {"speed", "Спидометр"}, {"slow_motion_video", "Замедление"},
+    {"high_quality", "HQ"}, {"settings", "Шестерёнка"}, {"tune", "Ползунки"}, {"menu", "Три полоски"},
+    {"info", "Информация"}, {"help_outline", "Вопрос"}, {"bookmark", "Закладка"}, {"star", "Звезда"},
+    {"favorite", "Сердце"}, {"folder_open", "Папка"}, {"history", "История"}, {"schedule", "Часы"},
+    {"push_pin", "Булавка"}, {"aspect_ratio", "Пропорции"}, {"brightness_6", "Яркость"},
+    {"live_tv", "Телевизор"}, {"download", "Скачать"}, {"close", "Крестик"},
+}
+
+local function icon_name(icon)
+    for _, i in ipairs(ICONS) do
+        if i[1] == icon then return i[2] end
+    end
+    return icon
+end
+
+-- ready-made buttons: title, icon, left click, tooltip
+local PRESETS = {
+    {"Скриншот", "photo_camera", "osd-msg screenshot"},
+    {"Громче", "volume_up", "no-osd add volume 5"},
+    {"Тише", "volume_down", "no-osd add volume -5"},
+    {"Звук вкл/выкл", "volume_off", "cycle mute"},
+    {"Скорость 1.5× / 1×", "speed", "cycle-values speed 1.5 1"},
+    {"Назад на 30 с", "replay_30", "seek -30"},
+    {"Вперёд на 30 с", "forward_30", "seek 30"},
+    {"Предыдущая глава", "skip_previous", "add chapter -1"},
+    {"Следующая глава", "skip_next", "add chapter 1"},
+    {"Повтор файла", "repeat_one", "cycle-values loop-file inf no"},
+    {"Поверх всех окон", "push_pin", "cycle ontop"},
+    {"Качество стрима", "high_quality", "script-binding hybrid/quality"},
+    {"Аудиодорожки", "audiotrack", "script-binding hybrid/audio"},
+    {"Соотношение сторон", "aspect_ratio", "script-binding hybrid/aspect"},
+    {"Открыть файл", "folder_open", "script-binding hybrid/open-file"},
+    {"Недавние файлы", "history", "script-binding hybrid/history"},
+    {"Статистика", "info", "script-binding stats/display-stats-toggle"},
+    {"Закрыть плеер", "close", "quit"},
+}
+
+-- built-in elements that can be put on the bar
+local BUILTIN = {
+    "play_pause", "jump_backward", "jump_forward", "playlist_prev", "playlist_next",
+    "chapter_prev", "chapter_next", "menu", "sub_track", "audio_track", "time_codes",
+    "title", "chapter_title", "seekbar", "speed_ruler", "speed", "shuffle", "file_loop",
+    "playlist", "pip", "fullscreen", "info", "ontop", "screenshot", "cache_info",
+}
+
+local function item_name(item)
+    if item.custom then
+        if item.custom.kind == "text" then return "Надпись «" .. (item.custom.text or "") .. "»" end
+        return item.tooltip or ("Кнопка «" .. icon_name(item.custom.icon) .. "»")
+    end
+    return NAMES[item.id] or item.id
+end
+M.item_name = item_name
+
+
 local T = {
-    save = "Сохранить", undo = "Шаг назад", reset = "Как по умолчанию", exit = "Выйти",
+    save = "Сохранить", undo = "Шаг назад", create = "Создать объект", reset = "Как по умолчанию", exit = "Выйти",
     hint = "Тащи мышкой, за уголок — размер · правый клик — свойства · стрелки — точно · Delete — убрать",
     height = "высота фона",
     saved = "Скин сохранён",
@@ -155,7 +221,7 @@ function M.render()
             fill(ass, h[2], h[3], h[4], h[5], accent, 0)
         end
         local item = sel.item
-        local label = (NAMES[item.id] or item.id) .. string.format("  %d×%d", sel.x2 - sel.x1, sel.y2 - sel.y1)
+        local label = item_name(item) .. string.format("  %d×%d", sel.x2 - sel.x1, sel.y2 - sel.y1)
         if not sel.shown then label = label .. " · " .. T.hidden end
         local ly = sel.y1 - 6
         if ly < 70 then ly = sel.y2 + 22 end
@@ -164,10 +230,11 @@ function M.render()
 
     -- toolbar
     local buttons = {
-        {"save", T.save, ed.dirty}, {"undo", T.undo, #ed.undo > 0},
+        {"save", T.save, ed.dirty}, {"undo", T.undo, #ed.undo > 0}, {"create", T.create, true},
         {"reset", T.reset, true}, {"exit", T.exit, true},
     }
-    local bw, bh, gap = 150, 30, 8
+    local gap, bh = 8, 30
+    local bw = math.min(150, math.floor((W - 40 - (#buttons - 1) * gap) / #buttons))
     local total = #buttons * bw + (#buttons - 1) * gap
     local x = (W - total) / 2
     ed.buttons = {}
@@ -284,7 +351,7 @@ local function remove_selected()
     push_undo()
     table.remove(ed.skin.items, ed.selected)
     ed.selected = nil
-    toast(string.format(T.removed, NAMES[item.id] or item.id))
+    toast(string.format(T.removed, item_name(item)))
     relayout()
     M.render()
 end
@@ -317,6 +384,8 @@ local function press_button(id)
         if ed.dirty then save() end
     elseif id == "undo" then
         undo()
+    elseif id == "create" then
+        M.open_create()
     elseif id == "reset" then
         push_undo()
         ed.skin = api.default_skin()
@@ -564,22 +633,149 @@ local function properties(index)
                 return "keep"
             end})
         end
+        if item.custom and item.custom.kind == "button" then
+            add({title = "Сменить иконку", icon = item.custom.icon, hint = icon_name(item.custom.icon), submenu = function ()
+                local list = {}
+                for _, i in ipairs(ICONS) do
+                    list[#list + 1] = {title = i[2], icon = i[1], active = i[1] == ed.skin.items[index].custom.icon,
+                        action = function ()
+                            change(index, function (it) it.custom = {kind = "button", icon = i[1]} end)
+                            return "keep"
+                        end}
+                end
+                return {title = "Иконка", items = list}
+            end})
+        elseif item.custom and item.custom.kind == "text" then
+            add({title = "Изменить текст", icon = "text_fields", hint = item.custom.text, action = function ()
+                ask_text("Текст надписи:", item.custom.text, function (text)
+                    if text == "" then return end
+                    change(index, function (it) it.custom = {kind = "text", text = text} end)
+                    M.render()
+                end)
+            end})
+        end
         add({title = "Удалить", icon = "delete", action = function ()
             ed.selected = index
             remove_selected()
         end})
-        return {title = NAMES[item.id] or item.id, items = items}
+        return {title = item_name(item), items = items}
+    end
+end
+
+-- create objects --------------------------------------------------------------------------
+
+local function new_custom_id()
+    local used = {}
+    for _, item in ipairs(ed.skin.items) do used[item.id] = true end
+    local n = 1
+    while used["custom_" .. n] do n = n + 1 end
+    return "custom_" .. n
+end
+
+-- new objects appear above the middle of the bar, then the user drags them
+local function add_item(item)
+    push_undo()
+    item.h = item.h or 24
+    if not item.anchor then
+        item.anchor = "center"
+        item.x = -math.floor((item.w or 24) / 2)
+        -- go up until the spot is free, so new objects do not pile on each other
+        local W, H = api.dims()
+        local x1, x2 = W / 2 + item.x, W / 2 + item.x + (item.w or 24)
+        local bottom = 70
+        for _ = 1, 12 do
+            local y2 = H - bottom
+            local y1 = y2 - item.h
+            local taken = false
+            for _, e in ipairs(entries()) do
+                if e.item.anchor ~= "stretch" and x1 < e.x2 + 4 and e.x1 < x2 + 4 and y1 < e.y2 + 4 and e.y1 < y2 + 4 then
+                    taken = true
+                    break
+                end
+            end
+            if not taken then break end
+            bottom = bottom + 30
+        end
+        item.bottom = bottom
+    end
+    ed.skin.items[#ed.skin.items + 1] = item
+    ed.selected = #ed.skin.items
+    relayout()
+    toast("Создано: " .. item_name(item) .. " — перетащи на место, правый клик — свойства", 5)
+end
+
+local function create_menu()
+    return function ()
+        local items = {}
+        items[#items + 1] = {title = "Готовая кнопка", icon = "smart_button", submenu = function ()
+            local list = {}
+            for _, p in ipairs(PRESETS) do
+                list[#list + 1] = {title = p[1], icon = p[2], action = function ()
+                    add_item({id = new_custom_id(), custom = {kind = "button", icon = p[2]},
+                        w = 24, h = 24, tooltip = p[1], actions = {left = p[3]}})
+                end}
+            end
+            return {title = "Готовая кнопка", items = list}
+        end}
+        items[#items + 1] = {title = "Своя кнопка (выбрать иконку)", icon = "add_box", submenu = function ()
+            local list = {}
+            for _, i in ipairs(ICONS) do
+                list[#list + 1] = {title = i[2], icon = i[1], action = function ()
+                    add_item({id = new_custom_id(), custom = {kind = "button", icon = i[1]}, w = 24, h = 24})
+                end}
+            end
+            return {title = "Иконка кнопки", items = list}
+        end}
+        items[#items + 1] = {title = "Надпись", icon = "text_fields", action = function ()
+            ask_text("Текст надписи:", "", function (text)
+                if text == "" then return end
+                add_item({id = new_custom_id(), custom = {kind = "text", text = text},
+                    w = math.max(24, math.floor(#text * 6)), h = 20})
+                M.render()
+            end)
+        end}
+        items[#items + 1] = {title = "Встроенный элемент", icon = "widgets", submenu = function ()
+            local present = {}
+            for _, item in ipairs(ed.skin.items) do present[item.id] = true end
+            local defaults = {}
+            for _, item in ipairs(api.default_skin().items) do defaults[item.id] = item end
+            local list = {}
+            for _, id in ipairs(BUILTIN) do
+                if not present[id] and api.element_type(id) then
+                    list[#list + 1] = {title = NAMES[id] or id, action = function ()
+                        local default = defaults[id]
+                        if default and default.anchor == "stretch" then
+                            add_item(api.copy(default)) -- spans the window at its standard height
+                        else
+                            local w = default and default.w or (id == "speed" and 42 or (id == "cache_info" and 70 or 24))
+                            add_item({id = id, w = w, h = default and default.h or 24})
+                        end
+                    end}
+                end
+            end
+            if #list == 0 then list[1] = {title = "Все встроенные элементы уже на панели", muted = true} end
+            return {title = "Встроенный элемент", items = list}
+        end}
+        return {title = "Создать объект", items = items}
     end
 end
 
 local bind, unbind
 
-local function open_properties(index)
-    ed.selected = index
+local function open_menu(id, builder)
     ed.menu_open = true
     unbind() -- the menu takes the mouse and the keyboard
     M.render()
-    api.menu.open("skin-properties", properties(index))
+    api.menu.open(id, builder)
+end
+
+local function open_properties(index)
+    ed.selected = index
+    open_menu("skin-properties", properties(index))
+end
+
+function M.open_create()
+    open_menu("skin-create", create_menu())
 end
 
 -- called by main.lua when the menu closes while the editor is open

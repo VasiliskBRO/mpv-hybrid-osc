@@ -2793,6 +2793,13 @@ layouts["skin"] = function ()
                 lo.style = id == "time_codes" and osc_styles.time or osc_styles.cache
             elseif id == "speed_ruler" then
                 lo = place(id, 5, e)
+            elseif e.item.custom then
+                -- editor-made object: an icon of the menu font, or text in the OSC font
+                lo = place(id, 5, e)
+                local text = e.item.custom.kind == "text"
+                lo.style = string.format("{\\bord%d\\3c&H0&\\1c&H%s&\\fs%d\\fn%s}", text and 1 or 0,
+                    osc_color_convert(user_opts.side_buttons_color), text and 16 or 24,
+                    text and user_opts.font or material_font)
             else
                 lo = place(id, 5, e)
                 lo.style = osc_styles[SKIN_STYLES[id] or "control_3"]
@@ -3769,6 +3776,18 @@ local function osc_init()
     ne.eventresponder["mbtn_right_up"] = function () mp.command("script-binding hybrid/audio-device") end
     ne.eventresponder["wheel_up_press"] = function () set_volume_value(state.volume + user_opts.volume_step) end
     ne.eventresponder["wheel_down_press"] = function () set_volume_value(state.volume - user_opts.volume_step) end
+
+    -- objects made in the skin editor: buttons with an icon and text labels
+    if user_opts.layout == "skin" then
+        for _, item in ipairs(get_skin().items) do
+            local custom = item.custom
+            if custom and item.id:match("^custom_") then
+                ne = new_element(item.id, "button")
+                ne.content = custom.kind == "text" and mp.command_native({"escape-ass", custom.text or ""})
+                    or (custom.icon or "radio_button_unchecked")
+            end
+        end
+    end
 
     -- load layout
     if state.is_image then
