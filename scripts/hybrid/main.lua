@@ -707,6 +707,8 @@ local state = {
     enabled = true,
     input_enabled = true,
     showhide_enabled = false,
+    zone_visible = {},                      -- skin hover zones made in the editor: zone id -> shown
+    zone_showtime = {},
     windowcontrols_buttons = false,
     windowcontrols_title = false,
     windowcontrols_ontop = false,
@@ -961,6 +963,15 @@ local function mouse_in_area(names)
                 return true
             end
         end
+    end
+    return false
+end
+
+-- own hover zone of the skin: the zone box or one of its buttons
+local function mouse_in_zone(z)
+    if mouse_hit_coords(z.x1, z.y1, z.x2, z.y2) then return true end
+    for _, r in ipairs(z.items) do
+        if mouse_hit_coords(r.x1, r.y1, r.x2, r.y2) then return true end
     end
     return false
 end
@@ -1674,10 +1685,32 @@ local function draw_seekbar_progress(element, elem_ass)
 end
 
 -- visibility of an element's group: "bottom" (main bar), "top" (window controls), "vol" (volume widget)
+-- groups "zone_*": buttons bound to a hover zone of the skin, shown on their own
+local function is_zone_group(g)
+    return type(g) == "string" and g:sub(1, 5) == "zone_"
+end
+
+local function zone_group_visible(g)
+    return state.skin_editing or user_opts.visibility == "always" or state.zone_visible[g] == true
+end
+
+local function any_zone_visible()
+    for _, z in ipairs(osc_param.skin_zones or {}) do
+        if zone_group_visible(z.id) then return true end
+    end
+    return false
+end
+
+-- skin buttons outside the bottom bar that are on screen now (own zones, top bar) and take clicks
+local function extra_buttons_visible()
+    return any_zone_visible() or (state.wc_visible and osc_param.areas["input_top"] ~= nil)
+end
+
 local function group_visible(element)
     local g = element.layout and element.layout.group
     if g == "top" then return state.wc_visible end
     if g == "vol" then return state.vol_visible end
+    if is_zone_group(g) then return zone_group_visible(g) end
     return state.osc_visible
 end
 
@@ -1687,6 +1720,7 @@ local function group_anim(element)
     local g = element.layout.group
     if g == "top" then return state.wc_animation or 0 end
     if g == "vol" then return state.vol_animation or 0 end
+    if is_zone_group(g) then return 0 end
     return nil
 end
 
@@ -2639,19 +2673,50 @@ end
 -- returns the list and the height of the bar background.
 -- editing: every existing item is shown (the editor places items that appear only sometimes),
 -- nothing collapses or gets hidden for lack of space; entry.shown tells the normal visibility
+local function is_skin_zone(item)
+    return item.custom ~= nil and item.custom.kind == "zone"
+end
+
+-- which group shows a skin item: "bottom" (the bar), "top" (with the window controls)
+-- or the id of a hover zone of the skin ("zone_*"); without a top bar the top zone works as an own zone
+local function skin_item_group(skin, item)
+    local target = item.show_in
+    if not target then return "bottom" end
+    if target == "top" then
+        if window_controls_enabled() then return "top" end
+        target = "zone_top"
+    end
+    if skin.zones_edited then
+        for _, other in ipairs(skin.items) do
+            if other.id == target and is_skin_zone(other) and target ~= "zone_bottom" and target ~= "zone_volume" then
+                return target
+            end
+        end
+    end
+    return "bottom"
+end
+
 local function resolve_skin(skin, W, H, editing)
     local list = {}
     local collapses, lowered = {}, 0
     for _, item in ipairs(skin.items) do
         local entry = {item = item}
-        entry.exists = element_names[item.id] ~= nil
-        entry.fits = not item.hide_below or W >= item.hide_below
-        entry.shown = entry.exists and entry.fits and skin_item_allowed(item.id)
-        entry.visible = editing and entry.exists or entry.shown
+        entry.is_zone = is_skin_zone(item)
+        if entry.is_zone then
+            -- hover zones are not drawn on the bar, only in the editor
+            entry.exists, entry.fits, entry.shown = true, true, true
+            entry.visible = editing
+        else
+            entry.exists = element_names[item.id] ~= nil
+            entry.fits = not item.hide_below or W >= item.hide_below
+            entry.shown = entry.exists and entry.fits and skin_item_allowed(item.id)
+            entry.visible = editing and entry.exists or entry.shown
+            entry.group = skin_item_group(skin, item)
+        end
         -- an item placed above the bar background lives on its own: it does not move with the bar
         -- and gets its own hover zone
-        entry.floating = item.bottom >= skin.height
-        if not editing and not entry.visible and item.collapse then
+        entry.floating = not entry.is_zone and item.bottom >= skin.height
+        if not editing and not entry.visible and item.collapse and not entry.is_zone then
             collapses[#collapses + 1] = {top = item.bottom + item.h, amount = item.collapse}
             lowered = lowered + item.collapse
         end
@@ -2661,7 +2726,7 @@ local function resolve_skin(skin, W, H, editing)
         local item = entry.item
         local dy = 0
         for _, c in ipairs(collapses) do
-            if not entry.floating and item.bottom >= c.top - 0.5 then dy = dy + c.amount end
+            if not entry.floating and not entry.is_zone and item.bottom >= c.top - 0.5 then dy = dy + c.amount end
         end
         local x1, x2
         if item.anchor == "stretch" then
@@ -2702,30 +2767,85 @@ local function resolve_skin(skin, W, H, editing)
     return list, math.max(0, skin.height - lowered)
 end
 
--- hover zones of a resolved skin: where the mouse shows the bar.
--- bar = {x1, y1, x2, y2} - the bottom zone (bar + deadzone above it), input = the bar and its items;
--- floating = one zone per item placed above the bar (the item plus item.zone px around it)
+-- the three standard hover zones; a skin that has zones_edited keeps them as items
+-- (moved, resized or deleted in the editor), other skins use the computed ones
+local BUILTIN_ZONES = {
+    {id = "zone_bottom", name = "Нижняя панель"},
+    {id = "zone_top", name = "Верхняя панель"},
+    {id = "zone_volume", name = "Громкость"},
+}
+local BUILTIN_ZONE_IDS = {zone_bottom = true, zone_top = true, zone_volume = true}
+
+local function rect_of(e) return {x1 = e.x1, y1 = e.y1, x2 = e.x2, y2 = e.y2} end
+
+-- hover zones of a resolved skin: where the mouse shows what.
+-- input = the bar and its items; bar = the bottom zone (nil when deleted in the editor);
+-- floating = one zone per bar item placed above the bar (the item plus item.pad px around it);
+-- top / volume = edited standard zones (only when skin.zones_edited, nil = deleted);
+-- own = zones whose buttons show on their own: {id, x1, y1, x2, y2, items = {rects}};
+-- top_items = rects of items shown with the top bar
 local SKIN_ZONE = 20
-local function skin_zones(list, W, H, bar_h)
+local function skin_zones(skin, list, W, H, bar_h)
     local ix1, iy1, ix2, iy2 = 0, H - bar_h, W, H
-    local floating = {}
+    local result = {floating = {}, own = {}, top_items = {}}
+    local own_by_id = {}
     for _, e in ipairs(list) do
-        if e.visible then
-            if e.floating then
-                local pad = e.item.zone or SKIN_ZONE
-                floating[#floating + 1] = {entry = e, x1 = math.max(0, e.x1 - pad), y1 = math.max(0, e.y1 - pad),
-                                           x2 = math.min(W, e.x2 + pad), y2 = math.min(H, e.y2 + pad)}
+        if e.is_zone and skin.zones_edited then
+            local id = e.item.id
+            if id == "zone_bottom" then result.bar = rect_of(e)
+            elseif id == "zone_volume" then result.volume = rect_of(e)
+            elseif id == "zone_top" and window_controls_enabled() then result.top = rect_of(e)
+            else
+                local z = rect_of(e)
+                z.id, z.items = id, {}
+                result.own[#result.own + 1] = z
+                own_by_id[id] = z
+            end
+        end
+    end
+    for _, e in ipairs(list) do
+        if e.visible and not e.is_zone then
+            if e.group == "top" then
+                result.top_items[#result.top_items + 1] = rect_of(e)
+            elseif own_by_id[e.group] then
+                table.insert(own_by_id[e.group].items, rect_of(e))
+            elseif e.floating then
+                local pad = e.item.pad or SKIN_ZONE
+                result.floating[#result.floating + 1] = {entry = e, x1 = math.max(0, e.x1 - pad), y1 = math.max(0, e.y1 - pad),
+                                                         x2 = math.min(W, e.x2 + pad), y2 = math.min(H, e.y2 + pad)}
             else
                 ix1, iy1 = math.min(ix1, e.x1), math.min(iy1, e.y1)
                 ix2, iy2 = math.max(ix2, e.x2), math.max(iy2, e.y2)
             end
         end
     end
-    return {
-        input = {x1 = ix1, y1 = iy1, x2 = ix2, y2 = iy2},
-        bar = {x1 = 0, y1 = get_align(-1 + (2 * user_opts.deadzonesize), iy1, 0, 0), x2 = W, y2 = H},
-        floating = floating,
-    }
+    result.input = {x1 = ix1, y1 = iy1, x2 = ix2, y2 = iy2}
+    if not skin.zones_edited then
+        result.bar = {x1 = 0, y1 = get_align(-1 + (2 * user_opts.deadzonesize), iy1, 0, 0), x2 = W, y2 = H}
+    end
+    return result
+end
+
+-- default boxes of the standard zones (same formulas as the computed ones), as skin items
+local function default_zone_item(id, skin)
+    local W, H = osc_param.playresx, osc_param.playresy
+    local bar_top = get_align(-1 + (2 * user_opts.deadzonesize), H - skin.height, 0, 0)
+    local top_bottom = 50 + get_align(1 - (2 * user_opts.deadzonesize), H - 50, 0, 0)
+    local name
+    for _, z in ipairs(BUILTIN_ZONES) do if z.id == id then name = z.name end end
+    local item = {id = id, custom = {kind = "zone", name = name}}
+    local function round(v) return math.floor(v + 0.5) end
+    if id == "zone_bottom" then
+        item.anchor, item.x, item.r, item.bottom, item.h = "stretch", 0, 0, 0, round(H - bar_top)
+    elseif id == "zone_top" then
+        item.anchor, item.x, item.r, item.bottom, item.h = "stretch", 0, 0, round(H - top_bottom), round(top_bottom)
+    else
+        local w = round(user_opts.volume_size * 3.5)
+        item.anchor = user_opts.volume_widget == "left" and "left" or "right"
+        item.x, item.w = item.anchor == "left" and 0 or -w, w
+        item.bottom, item.h = round(H - bar_top), round(bar_top - top_bottom)
+    end
+    return item
 end
 
 -- mouse buttons of skin item actions -> element event names
@@ -2765,7 +2885,8 @@ end
 
 layouts["skin"] = function ()
     local W, H = osc_param.playresx, osc_param.playresy
-    local list, bar_h = resolve_skin(get_skin(), W, H, state.skin_editing)
+    local skin = get_skin()
+    local list, bar_h = resolve_skin(skin, W, H, state.skin_editing)
 
     osc_param.video_margins.b = bar_h / H
     osc_param.areas = {}
@@ -2773,13 +2894,24 @@ layouts["skin"] = function ()
     -- mouse input covers the bar with its items; an item placed above the bar gets its own
     -- small zone, so the whole window between them does not count as "over the bar"
     -- (the bottom zone goes first: the volume widget reads showhide[1])
-    local zones = skin_zones(list, W, H, bar_h)
+    local zones = skin_zones(skin, list, W, H, bar_h)
     local z = zones.input
     add_area("input", z.x1, z.y1, z.x2, z.y2)
-    add_area("showhide", zones.bar.x1, zones.bar.y1, zones.bar.x2, zones.bar.y2)
+    if zones.bar then add_area("showhide", zones.bar.x1, zones.bar.y1, zones.bar.x2, zones.bar.y2) end
     for _, f in ipairs(zones.floating) do
         add_area("input", f.x1, f.y1, f.x2, f.y2)
         add_area("showhide", f.x1, f.y1, f.x2, f.y2)
+    end
+    -- buttons shown with the top bar or by an own zone: clickable, keep their group shown under the cursor
+    for _, r in ipairs(zones.top_items) do add_area("input_top", r.x1, r.y1, r.x2, r.y2) end
+    for _, own in ipairs(zones.own) do
+        for _, r in ipairs(own.items) do add_area("input_zone", r.x1, r.y1, r.x2, r.y2) end
+    end
+    osc_param.skin_zones = zones.own
+    osc_param.areas_strict = true -- the showhide box may span several zones: mouse_move checks them
+    -- edited standard zones replace the computed top / volume zones once those are laid out
+    if skin.zones_edited then
+        osc_param.skin_zone_override = {top = zones.top or false, volume = zones.volume or false}
     end
 
     setup_bg_elements(0, H, W, bar_h, user_opts.fade_transparency_strength, user_opts.window_fade_transparency_strength)
@@ -2793,7 +2925,9 @@ layouts["skin"] = function ()
 
     for _, e in ipairs(list) do
         local id = e.item.id
-        if e.visible then
+        if e.is_zone then
+            -- a hover zone: no element
+        elseif e.visible then
             elements[id].visible = true
             local lo
             if id == "title" or id == "chapter_title" then
@@ -2839,6 +2973,7 @@ layouts["skin"] = function ()
                 lo.style = osc_styles[SKIN_STYLES[id] or "control_3"]
             end
             apply_skin_item(id, lo, e.item)
+            if e.group ~= "bottom" then lo.group = e.group end
         elseif e.exists then
             elements[id].visible = false
         end
@@ -3824,6 +3959,7 @@ local function osc_init()
     end
 
     -- load layout
+    osc_param.skin_zones, osc_param.skin_zone_override, osc_param.areas_strict = nil, nil, nil
     if state.is_image then
         layouts["modern-image"]()
     elseif layouts[user_opts.layout] then
@@ -3839,6 +3975,17 @@ local function osc_init()
 
     -- load volume widget (needs the bottom and top show zones)
     volume_layout()
+
+    -- skin with edited standard zones: they replace the computed top / volume zones (false = deleted)
+    local override = osc_param.skin_zone_override
+    if override then
+        if osc_param.areas["showhide_wc"] or override.top then
+            osc_param.areas["showhide_wc"] = override.top and {override.top} or nil
+        end
+        if osc_param.areas["input_vol"] then
+            osc_param.areas["showhide_vol"] = override.volume and {override.volume} or nil
+        end
+    end
 
     -- cache seekbar elements
     state.persistent_seekbar_element = elements["persistent_seekbar"]
@@ -3889,7 +4036,7 @@ local function hide_osc()
     -- hidden, rather than waiting for the next render tick to do it.
     -- The volume widget shares the "input" section: keep it while the widget is shown
     -- (autohide calls this on every tick once the bar timed out).
-    if not state.vol_visible then
+    if not state.vol_visible and not any_zone_visible() and not (state.wc_visible and osc_param.areas["input_top"]) then
         set_virt_mouse_area(0, 0, 0, 0, "input")
     end
     -- reset margins before hide_bar wipes the overlay
@@ -3912,11 +4059,16 @@ local function mouse_leave()
             if state.vol_visible then
                 state.vol_showtime = now
             end
+            for id, shown in pairs(state.zone_visible) do
+                if shown then state.zone_showtime[id] = now end
+            end
             request_tick()
         else
             if not state.keeponpause_active then hide_osc() end
             hide_wc()
             hide_vol()
+            state.zone_visible = {}
+            request_tick()
         end
     end
     -- reset mouse position
@@ -3983,7 +4135,7 @@ local function has_mid_action(e)
 end
 
 local function refresh_input_area()
-    if not (state.osc_visible or state.vol_visible) or state.menu_open then
+    if not (state.osc_visible or state.vol_visible or extra_buttons_visible()) or state.menu_open then
         set_virt_mouse_area(0, 0, 0, 0, "input")
         set_virt_mouse_area(0, 0, 0, 0, "input_wheel")
         set_virt_mouse_area(0, 0, 0, 0, "input_mid")
@@ -4000,7 +4152,7 @@ local function refresh_input_area()
     end
 
     -- bail early if the cursor isn't inside the bottom bar zone at all
-    if not mouse_in_area({"input", "input_vol"}) then
+    if not mouse_in_area({"input", "input_vol", "input_top", "input_zone"}) then
         set_virt_mouse_area(0, 0, 0, 0, "input")
         set_virt_mouse_area(0, 0, 0, 0, "input_wheel")
         set_virt_mouse_area(0, 0, 0, 0, "input_mid")
@@ -4090,8 +4242,8 @@ local function process_event(source, what)
                 elseif user_opts.visibility ~= "always" and not state.keeponpause_active and user_opts.deadzone_hide ~= "timeout" then
                     hide_osc()
                 end
-            elseif #(osc_param.areas["showhide"] or {}) > 1 and not mouse_in_area({"showhide", "showhide_wc"}) then
-                -- skin with items above the bar: the mpv box spans all zones, the gaps between them are a deadzone
+            elseif osc_param.areas_strict and not mouse_in_area({"showhide", "showhide_wc"}) then
+                -- skin layout: the mpv box spans all zones, the gaps between them are a deadzone
                 if user_opts.visibility ~= "always" and not state.keeponpause_active and user_opts.deadzone_hide ~= "timeout" then
                     hide_osc()
                     if window_controls_enabled() then hide_wc() end
@@ -4109,6 +4261,15 @@ local function process_event(source, what)
                 show_vol()
             elseif user_opts.visibility ~= "always" and user_opts.deadzone_hide ~= "timeout" then
                 hide_vol()
+            end
+        end
+
+        -- own hover zones of the skin: their buttons show while the cursor is in the zone
+        -- (or on one of the buttons), they hide by the autohide timeout in render()
+        for _, z in ipairs(osc_param.skin_zones or {}) do
+            if mouse_in_zone(z) and state.enabled then
+                state.zone_visible[z.id] = true
+                state.zone_showtime[z.id] = mp.get_time()
             end
         end
 
@@ -4216,14 +4377,24 @@ local function render()
 
     --mouse show/hide area: mpv keeps one box per section, so it gets the box around all zones;
     -- the mouse_move handler checks the zones themselves
+    -- (own hover zones of the skin are in that box too)
     local sh_x1, sh_y1, sh_x2, sh_y2
-    for _, cords in ipairs(osc_param.areas["showhide"]) do
+    local function grow(cords)
         sh_x1 = math.min(sh_x1 or cords.x1, cords.x1)
         sh_y1 = math.min(sh_y1 or cords.y1, cords.y1)
         sh_x2 = math.max(sh_x2 or cords.x2, cords.x2)
         sh_y2 = math.max(sh_y2 or cords.y2, cords.y2)
     end
-    if sh_x1 then set_virt_mouse_area(sh_x1, sh_y1, sh_x2, sh_y2, "showhide") end
+    for _, cords in ipairs(osc_param.areas["showhide"] or {}) do grow(cords) end
+    for _, z in ipairs(osc_param.skin_zones or {}) do
+        grow(z)
+        for _, r in ipairs(z.items) do grow(r) end
+    end
+    if sh_x1 then
+        set_virt_mouse_area(sh_x1, sh_y1, sh_x2, sh_y2, "showhide")
+    else
+        set_virt_mouse_area(0, 0, 0, 0, "showhide")
+    end
     if osc_param.areas["showhide_wc"] then
         for _, cords in pairs(osc_param.areas["showhide_wc"]) do
             set_virt_mouse_area(cords.x1, cords.y1, cords.x2, cords.y2, "showhide_wc")
@@ -4257,7 +4428,7 @@ local function render()
     end
 
     -- sync input area to cursor position
-    local want_input = (state.osc_visible or state.vol_visible) and not state.menu_open and not state.skin_editing
+    local want_input = (state.osc_visible or state.vol_visible or extra_buttons_visible()) and not state.menu_open and not state.skin_editing
     if want_input ~= state.input_enabled then
         if want_input then
             mp.enable_key_bindings("input")
@@ -4296,9 +4467,9 @@ local function render()
     end
 
     local osc_areas = {"input"}
-    local wc_areas  = {"window-controls", "window-controls-title", "window-controls-ontop"}
+    local wc_areas  = {"window-controls", "window-controls-title", "window-controls-ontop", "input_top"}
     if not user_opts.windowcontrols_independent then
-        osc_areas = {"input", "window-controls", "window-controls-title", "window-controls-ontop"}
+        osc_areas = {"input", "window-controls", "window-controls-title", "window-controls-ontop", "input_top"}
         wc_areas = osc_areas
     end
 
@@ -4309,10 +4480,39 @@ local function render()
     run_autohide("wc_showtime", hide_wc, wc_areas)
     run_autohide("vol_showtime", hide_vol, {"input_vol"})
 
+    -- own hover zones of the skin: like the bar, the buttons stay while the cursor is on one of them
+    if user_opts.visibility ~= "always" and not state.skin_editing then
+        for _, z in ipairs(osc_param.skin_zones or {}) do
+            if state.zone_visible[z.id] then
+                state.zone_showtime[z.id] = state.zone_showtime[z.id] or now
+                local held = state.active_element ~= nil or user_opts.keep_with_cursor
+                local on_button = false
+                for _, r in ipairs(z.items) do
+                    if mouse_hit_coords(r.x1, r.y1, r.x2, r.y2) then on_button = true end
+                end
+                if held and on_button then state.zone_showtime[z.id] = now end
+                local hide_timeout = get_hidetimeout()
+                if hide_timeout >= 0 then
+                    local timeout = state.zone_showtime[z.id] + (hide_timeout / 1000) - now
+                    if timeout <= 0 then
+                        state.zone_visible[z.id] = false
+                    else
+                        if not state.hide_timer then state.hide_timer = mp.add_timeout(0, tick) end
+                        if timeout < state.hide_timer.timeout then
+                            state.hide_timer.timeout = timeout
+                            state.hide_timer:kill()
+                            state.hide_timer:resume()
+                        end
+                    end
+                end
+            end
+        end
+    end
+
     -- actual rendering
     local ass = assdraw.ass_new()
 
-    if state.osc_visible or state.wc_visible or state.vol_visible then
+    if state.osc_visible or state.wc_visible or state.vol_visible or any_zone_visible() then
         render_elements(ass)
     end
 
@@ -4988,9 +5188,23 @@ editor.init({
     zones = function (skin)
         local W, H = osc_param.playresx, osc_param.playresy
         local list, bar_h = resolve_skin(skin, W, H, true)
-        return skin_zones(list, W, H, bar_h)
+        return skin_zones(skin, list, W, H, bar_h)
     end,
     zone_default = SKIN_ZONE,
+    builtin_zones = BUILTIN_ZONES,
+    builtin_zone_ids = BUILTIN_ZONE_IDS,
+    default_zone_item = default_zone_item,
+    -- the standard zones as items, for a skin that never had its zones edited
+    -- (no volume zone when the volume widget is off)
+    default_zone_items = function (skin)
+        local items = {}
+        for _, z in ipairs(BUILTIN_ZONES) do
+            if z.id ~= "zone_volume" or user_opts.volume_widget ~= "no" then
+                items[#items + 1] = default_zone_item(z.id, skin)
+            end
+        end
+        return items
+    end,
     relayout = request_init_resize,
     dims = function () return osc_param.playresx, osc_param.playresy end,
     scale = get_virt_scale_factor,

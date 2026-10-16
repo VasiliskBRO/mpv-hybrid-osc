@@ -79,6 +79,7 @@ local BUILTIN = {
 }
 
 local function item_name(item)
+    if item.custom and item.custom.kind == "zone" then return "Зона «" .. (item.custom.name or item.id) .. "»" end
     if item.custom then
         if item.custom.kind == "text" then return "Надпись «" .. (item.custom.text or "") .. "»" end
         return item.tooltip or ("Кнопка «" .. icon_name(item.custom.icon) .. "»")
@@ -92,7 +93,7 @@ local T = {
     save = "Сохранить", undo = "Шаг назад", create = "Создать объект", reset = "Как по умолчанию", exit = "Выйти",
     hint = "Тащи мышкой, за уголок — размер · правый клик — свойства · стрелки — точно · Delete — убрать",
     height = "высота фона",
-    zone_bar = "зона показа панели (мышь здесь — панель появляется)",
+    zone = "зона наведения",
     saved = "Скин сохранён",
     save_failed = "Не удалось сохранить: %s",
     unsaved = "Есть несохранённые изменения: «Сохранить» или ещё раз «Выйти» — выйти без сохранения",
@@ -153,6 +154,40 @@ local function entries()
     return api.resolve(ed.skin)
 end
 
+-- hover zones -------------------------------------------------------------------------------
+
+local ZONE_COLORS = {zone_bottom = nil, zone_top = "#4FC3F7", zone_volume = "#66BB6A"}
+local OWN_ZONE_COLORS = {"#FFD54F", "#F06292", "#26C6DA", "#AB47BC", "#FF8232", "#C8C8C8"}
+
+local function zone_color(id)
+    if id == "zone_bottom" then return api.accent() end
+    if ZONE_COLORS[id] then return ZONE_COLORS[id] end
+    local n = tonumber((id or ""):match("^zone_(%d+)$")) or 1
+    return OWN_ZONE_COLORS[(n - 1) % #OWN_ZONE_COLORS + 1]
+end
+
+-- a skin that never had its zones edited gets the standard zones as items, so they can be moved and deleted
+function M.with_zones(skin)
+    if not skin.zones_edited then
+        for _, item in ipairs(api.default_zone_items(skin)) do skin.items[#skin.items + 1] = item end
+        skin.zones_edited = true
+    end
+    return skin
+end
+
+local function is_zone(item) return item and item.custom and item.custom.kind == "zone" end
+
+-- own zones (not the standard ones): {id, name}
+local function own_zones()
+    local list = {}
+    for _, item in ipairs(ed.skin.items) do
+        if is_zone(item) and not api.builtin_zone_ids[item.id] then
+            list[#list + 1] = {id = item.id, name = item.custom.name or item.id}
+        end
+    end
+    return list
+end
+
 -- drawing -------------------------------------------------------------------------------
 
 local function rect_path(x1, y1, x2, y2)
@@ -205,20 +240,28 @@ function M.render()
     fill(ass, hx1, hy1, hx2, hy2, ed.hover == "height" and accent or "#202020", 0x30)
     text(ass, (hx1 + hx2) / 2, (hy1 + hy2) / 2, 5, "↕ " .. T.height, 12)
 
-    -- hover zones: where the mouse shows the bar (bottom zone, own zones of items above the bar)
-    local zones = api.zones(ed.skin)
-    fill(ass, zones.bar.x1, zones.bar.y1, zones.bar.x2, zones.bar.y2, accent, 0xEE)
-    fill(ass, zones.bar.x1, zones.bar.y1 - 0.5, zones.bar.x2, zones.bar.y1 + 0.5, accent, 0x40)
-    text(ass, 10, zones.bar.y1 + 4, 7, T.zone_bar, 12, "#DDDDDD")
-    for _, z in ipairs(zones.floating) do
-        fill(ass, z.x1, z.y1, z.x2, z.y2, accent, 0xB8)
-        frame(ass, z.x1, z.y1, z.x2, z.y2, accent, 0x30, 1)
+    -- hover zones: a tinted box with its name; buttons that show by a zone get a frame of its color
+    for i, e in ipairs(list) do
+        if e.is_zone then
+            local color = zone_color(e.item.id)
+            fill(ass, e.x1, e.y1, e.x2, e.y2, color, 0xD8)
+            if i ~= ed.selected then
+                frame(ass, e.x1, e.y1, e.x2, e.y2, color, ed.hover == i and 0x00 or 0x50, ed.hover == i and 1.5 or 1)
+            end
+            text(ass, e.x1 + 6, e.y1 + 4, 7, T.zone .. ": " .. (e.item.custom.name or e.item.id), 12, color)
+        end
+    end
+    -- the bar's own zones around its items above the bar
+    for _, z in ipairs(api.zones(ed.skin).floating) do
+        fill(ass, z.x1, z.y1, z.x2, z.y2, zone_color("zone_bottom"), 0xC8)
     end
 
     -- item frames (only the selected one while its property menu is open)
     for i, e in ipairs(list) do
-        if i ~= ed.selected and not ed.menu_open then
+        if i ~= ed.selected and not ed.menu_open and not e.is_zone then
             local color, alpha = "#FFFFFF", ed.hover == i and 0x00 or 0x70
+            if e.group == "top" then color = zone_color("zone_top")
+            elseif e.group and e.group ~= "bottom" then color = zone_color(e.group) end
             if not e.exists or not e.shown then color, alpha = "#9A9A9A", 0x80 end
             frame(ass, e.x1, e.y1, e.x2, e.y2, color, alpha, ed.hover == i and 1.5 or 1)
         end
@@ -361,6 +404,12 @@ local function remove_selected()
     if not item then return end
     push_undo()
     table.remove(ed.skin.items, ed.selected)
+    -- buttons of a deleted zone go back to the bottom bar
+    if is_zone(item) then
+        for _, other in ipairs(ed.skin.items) do
+            if other.show_in == item.id then other.show_in = nil end
+        end
+    end
     ed.selected = nil
     toast(string.format(T.removed, item_name(item)))
     relayout()
@@ -399,7 +448,7 @@ local function press_button(id)
         M.open_create()
     elseif id == "reset" then
         push_undo()
-        ed.skin = api.default_skin()
+        ed.skin = M.with_zones(api.default_skin())
         ed.selected = nil
         relayout()
         toast(T.reset_done)
@@ -468,8 +517,8 @@ local COLORS = {
 local ALPHAS = {{"Непрозрачный", nil}, {"Чуть прозрачный (25%)", 64}, {"Полупрозрачный (50%)", 128},
                 {"Почти невидимый (75%)", 192}}
 
-local ZONES = {{"Как обычно (20 px)", nil}, {"Без запаса — только сам элемент", 0}, {"Маленькая (8 px)", 8},
-               {"Большая (40 px)", 40}, {"Очень большая (80 px)", 80}}
+local PADS = {{"Как обычно (20 px)", nil}, {"Без запаса — только сам элемент", 0}, {"Маленький (8 px)", 8},
+              {"Большой (40 px)", 40}, {"Очень большой (80 px)", 80}}
 
 local PRIORITIES = {
     {"Никогда не прятать", nil}, {"Прятать последним", 9}, {"Прятать позже других", 6},
@@ -591,45 +640,61 @@ local function properties(index)
         local items = {}
         local function add(entry) items[#items + 1] = entry end
 
-        if is_button then
-            local count = 0
-            for _ in pairs(item.actions or {}) do count = count + 1 end
-            add({title = "Что делает", icon = "touch_app", hint = count > 0 and ("изменено: " .. count) or "как обычно",
-                 submenu = actions_menu(index)})
-        end
-        if item.id ~= "speed_ruler" then
-            local sizes = {{"Как в теме", nil}}
-            for _, s in ipairs({12, 14, 16, 18, 20, 22, 24, 28, 32, 36, 40, 48}) do sizes[#sizes + 1] = {s .. " px", s} end
-            add({title = is_button and "Размер иконки" or "Размер текста", icon = "format_size",
-                 hint = item.size and (item.size .. " px") or "как в теме",
-                 submenu = choice_list("Размер", sizes, function () return ed.skin.items[index].size end, index,
-                     function (it, v) it.size = v end)})
-            local colors = {{"Как в теме", nil}}
-            for _, c in ipairs(COLORS) do colors[#colors + 1] = c end
-            add({title = "Цвет", icon = "palette", hint = find_name(colors, item.color, item.color),
-                 submenu = choice_list("Цвет", colors, function () return ed.skin.items[index].color end, index,
-                     function (it, v) it.color = v end)})
-        end
-        add({title = "Прозрачность", icon = "opacity", hint = find_name(ALPHAS, item.alpha),
-             submenu = choice_list("Прозрачность", ALPHAS, function () return ed.skin.items[index].alpha end, index,
-                 function (it, v) it.alpha = v end)})
-        add({title = "Когда мало места", icon = "unfold_less", hint = find_name(PRIORITIES, item.priority),
-             submenu = choice_list("Когда окно узкое", PRIORITIES, function () return ed.skin.items[index].priority end,
-                 index, function (it, v) it.priority = v end)})
-        -- only items above the bar background have their own zone
-        if item.bottom >= ed.skin.height then
-            add({title = "Зона наведения", icon = "highlight_alt", hint = find_name(ZONES, item.zone, item.zone and (item.zone .. " px")),
-                 submenu = choice_list("Где мышь показывает панель", ZONES, function () return ed.skin.items[index].zone end,
-                     index, function (it, v) it.zone = v end)})
-        end
-        if is_button then
-            add({title = "Подсказка при наведении", icon = "chat_bubble_outline",
-                 hint = item.tooltip or "как обычно", action = function ()
-                ask_text("Текст подсказки (пусто — как обычно):", item.tooltip, function (text)
-                    change(index, function (it) it.tooltip = text ~= "" and text or nil end)
+        if is_zone(item) then
+            add({title = "Название", icon = "edit", hint = item.custom.name, action = function ()
+                ask_text("Название зоны:", item.custom.name, function (text)
+                    if text == "" then return end
+                    change(index, function (it) it.custom = {kind = "zone", name = text} end)
                     M.render()
                 end)
             end})
+        else
+            -- where the item shows: with the bottom bar, the top bar or by a hover zone of the skin
+            local places = {{"Нижняя панель", nil}, {"Верхняя панель", "top"}}
+            for _, z in ipairs(own_zones()) do places[#places + 1] = {z.name, z.id} end
+            add({title = "Появляется в зоне", icon = "highlight_alt", hint = find_name(places, item.show_in, item.show_in),
+                 submenu = choice_list("Когда появляется", places, function () return ed.skin.items[index].show_in end,
+                     index, function (it, v) it.show_in = v end)})
+            if is_button then
+                local count = 0
+                for _ in pairs(item.actions or {}) do count = count + 1 end
+                add({title = "Что делает", icon = "touch_app", hint = count > 0 and ("изменено: " .. count) or "как обычно",
+                     submenu = actions_menu(index)})
+            end
+            if item.id ~= "speed_ruler" then
+                local sizes = {{"Как в теме", nil}}
+                for _, s in ipairs({12, 14, 16, 18, 20, 22, 24, 28, 32, 36, 40, 48}) do sizes[#sizes + 1] = {s .. " px", s} end
+                add({title = is_button and "Размер иконки" or "Размер текста", icon = "format_size",
+                     hint = item.size and (item.size .. " px") or "как в теме",
+                     submenu = choice_list("Размер", sizes, function () return ed.skin.items[index].size end, index,
+                         function (it, v) it.size = v end)})
+                local colors = {{"Как в теме", nil}}
+                for _, c in ipairs(COLORS) do colors[#colors + 1] = c end
+                add({title = "Цвет", icon = "palette", hint = find_name(colors, item.color, item.color),
+                     submenu = choice_list("Цвет", colors, function () return ed.skin.items[index].color end, index,
+                         function (it, v) it.color = v end)})
+            end
+            add({title = "Прозрачность", icon = "opacity", hint = find_name(ALPHAS, item.alpha),
+                 submenu = choice_list("Прозрачность", ALPHAS, function () return ed.skin.items[index].alpha end, index,
+                     function (it, v) it.alpha = v end)})
+            add({title = "Когда мало места", icon = "unfold_less", hint = find_name(PRIORITIES, item.priority),
+                 submenu = choice_list("Когда окно узкое", PRIORITIES, function () return ed.skin.items[index].priority end,
+                     index, function (it, v) it.priority = v end)})
+            -- a bar item placed above the bar background has its own small zone around it
+            if not item.show_in and item.bottom >= ed.skin.height then
+                add({title = "Запас вокруг кнопки", icon = "crop_free", hint = find_name(PADS, item.pad, item.pad and (item.pad .. " px")),
+                     submenu = choice_list("Где мышь показывает панель", PADS, function () return ed.skin.items[index].pad end,
+                         index, function (it, v) it.pad = v end)})
+            end
+            if is_button then
+                add({title = "Подсказка при наведении", icon = "chat_bubble_outline",
+                     hint = item.tooltip or "как обычно", action = function ()
+                    ask_text("Текст подсказки (пусто — как обычно):", item.tooltip, function (text)
+                        change(index, function (it) it.tooltip = text ~= "" and text or nil end)
+                        M.render()
+                    end)
+                end})
+            end
         end
         local e = entries()[index]
         if item.anchor == "stretch" then
@@ -754,6 +819,33 @@ local function create_menu()
                 M.render()
             end)
         end}
+        items[#items + 1] = {title = "Зона наведения", icon = "highlight_alt", action = function ()
+            local used = {}
+            for _, item in ipairs(ed.skin.items) do used[item.id] = true end
+            local n = 1
+            while used["zone_" .. n] do n = n + 1 end
+            local W, H = api.dims()
+            add_item({id = "zone_" .. n, custom = {kind = "zone", name = "Зона " .. n},
+                anchor = "center", x = -100, w = 200, bottom = math.floor(H / 2 - 60), h = 120})
+            toast("Зона создана: растяни её, потом у кнопки «Появляется в зоне» выбери её", 6)
+        end}
+        local missing = {}
+        for _, z in ipairs(api.builtin_zones) do
+            local present = false
+            for _, item in ipairs(ed.skin.items) do present = present or item.id == z.id end
+            if not present then missing[#missing + 1] = z end
+        end
+        if #missing > 0 then
+            items[#items + 1] = {title = "Вернуть стандартную зону", icon = "restore", submenu = function ()
+                local list = {}
+                for _, z in ipairs(missing) do
+                    list[#list + 1] = {title = z.name, action = function ()
+                        add_item(api.default_zone_item(z.id, ed.skin))
+                    end}
+                end
+                return {title = "Вернуть стандартную зону", items = list}
+            end}
+        end
         items[#items + 1] = {title = "Встроенный элемент", icon = "widgets", submenu = function ()
             local present = {}
             for _, item in ipairs(ed.skin.items) do present[item.id] = true end
@@ -938,9 +1030,10 @@ function M.open()
     if ed then return end
     local skin = api.get_skin()
     ed = {
-        skin = skin, snapshot = api.copy(skin), undo = {}, dirty = false,
+        skin = M.with_zones(api.copy(skin)), snapshot = api.copy(skin), undo = {}, dirty = false,
         was_paused = mp.get_property_native("pause"),
     }
+    api.set_skin(ed.skin)
     mp.set_property_native("pause", true)
     api.set_editing(true)
     bind()
@@ -950,7 +1043,7 @@ end
 
 close = function ()
     if not ed then return end
-    if ed.dirty then api.set_skin(ed.snapshot) end -- leaving without saving
+    api.set_skin(ed.snapshot) -- the last saved state (unsaved changes and added standard zones go away)
     if ed.toast_timer then ed.toast_timer:kill() end
     local was_paused = ed.was_paused
     ed = nil

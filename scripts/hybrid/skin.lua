@@ -3,6 +3,9 @@
 -- A skin is a JSON file in ~~/skins/<name>.json:
 --   { "name": "...", "height": 123, "items": [ item, ... ] }
 --   height - height of the bar background (virtual px, the window is 720 high)
+--   zones_edited - true: the hover zones are items of the skin (kind "zone"), the standard ones
+--              included (zone_bottom, zone_top, zone_volume; a deleted one does not work);
+--              otherwise the standard zones are computed and there are no own zones
 -- Item fields:
 --   id        element name (see ELEMENTS in main.lua) or "custom_*" for user-made objects
 --   anchor    "left" | "center" | "right" - x is counted from that point of the window
@@ -18,11 +21,14 @@
 --   color     "#RRGGBB" instead of the theme's color
 --   alpha     transparency 0 (opaque) .. 255 (invisible)
 --   tooltip   text shown on hover (buttons)
---   zone      item above the bar: how far around it (virtual px) the mouse shows the bar, default 20
+--   pad       bar item above the bar: how far around it (virtual px) the mouse shows the bar, default 20
+--   show_in   when the item shows: nil = with the bottom bar, "top" = with the window controls,
+--             "zone_N" = when the mouse is in that hover zone of the skin
 --   actions   {left = "mpv command", right = ..., wheel_up = ..., wheel_down = ...};
 --             "ignore" = do nothing; replaces what the element does with that button
 --   custom    objects made in the editor (id "custom_N"):
 --             {kind = "button", icon = "<Material Icons name>"} or {kind = "text", text = "..."}
+--             hover zones (id "zone_*"): {kind = "zone", name = "..."}
 
 local utils = require "mp.utils"
 
@@ -87,13 +93,17 @@ local function normalize(skin)
             item.collapse = tonumber(item.collapse)
             item.size = tonumber(item.size)
             item.alpha = tonumber(item.alpha)
-            item.zone = tonumber(item.zone)
+            item.pad = tonumber(item.pad or item.zone) -- "zone" was the old name
+            item.zone = nil
+            if type(item.show_in) ~= "string" or item.show_in == "" then item.show_in = nil end
             if type(item.color) ~= "string" or not item.color:match("^#%x%x%x%x%x%x$") then item.color = nil end
             if type(item.tooltip) ~= "string" then item.tooltip = nil end
-            if type(item.custom) == "table" and (item.custom.kind == "button" or item.custom.kind == "text") then
-                item.custom = {kind = item.custom.kind,
+            local kind = type(item.custom) == "table" and item.custom.kind
+            if kind == "button" or kind == "text" or kind == "zone" then
+                item.custom = {kind = kind,
                     icon = type(item.custom.icon) == "string" and item.custom.icon or nil,
-                    text = type(item.custom.text) == "string" and item.custom.text or nil}
+                    text = type(item.custom.text) == "string" and item.custom.text or nil,
+                    name = type(item.custom.name) == "string" and item.custom.name or nil}
             else
                 item.custom = nil
             end
@@ -117,6 +127,7 @@ local function normalize(skin)
     skin.items = items
     skin.height = math.max(0, tonumber(skin.height) or M.DEFAULT.height)
     skin.name = type(skin.name) == "string" and skin.name or nil
+    skin.zones_edited = skin.zones_edited == true or nil
     return skin
 end
 
@@ -136,7 +147,7 @@ end
 
 -- JSON with a stable key order and one item per line, so the file stays readable
 local KEY_ORDER = {"id", "custom", "anchor", "x", "w", "r", "bottom", "h", "priority", "hide_below", "collapse",
-                   "size", "color", "alpha", "zone", "tooltip", "actions"}
+                   "size", "color", "alpha", "pad", "show_in", "tooltip", "actions"}
 
 local function json_value(value)
     if type(value) == "number" then
@@ -169,6 +180,7 @@ function M.encode(skin)
     local lines = {"{"}
     lines[#lines + 1] = string.format('  "name": %s,', utils.format_json(skin.name or ""))
     lines[#lines + 1] = string.format('  "height": %s,', json_value(skin.height or M.DEFAULT.height))
+    if skin.zones_edited then lines[#lines + 1] = '  "zones_edited": true,' end
     lines[#lines + 1] = '  "items": ['
     for i, item in ipairs(skin.items) do
         lines[#lines + 1] = "    " .. json_object(item, KEY_ORDER) .. (i < #skin.items and "," or "")
